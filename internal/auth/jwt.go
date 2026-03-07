@@ -2,13 +2,20 @@ package auth
 
 import (
 	"errors"
+	"os"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 )
 
-var jwtKey = []byte("your_secret_key_keep_it_safe") // 以后可以从 Config 读取
+func getJWTKey() []byte {
+	secret := os.Getenv("JWT_SECRET")
+	if secret == "" {
+		secret = "dev_only_change_me"
+	}
+	return []byte(secret)
+}
 
 type Claims struct {
 	UserID uuid.UUID `json:"user_id"`
@@ -26,14 +33,14 @@ func GenerateToken(userID uuid.UUID) (string, error) {
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString(jwtKey)
+	return token.SignedString(getJWTKey())
 }
 
 // ParseToken 解析并验证 JWT，返回 UserID
 func ParseToken(tokenString string) (uuid.UUID, error) {
 	claims := &Claims{}
 	token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
-		return jwtKey, nil
+		return getJWTKey(), nil
 	})
 
 	if err != nil || !token.Valid {
