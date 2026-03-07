@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"rhea-backend/internal/agent"
 	"rhea-backend/internal/auth"
@@ -34,6 +35,17 @@ func main() {
 		log.Fatalf("Failed to initialize DB: %v", dbErr)
 	}
 
+	sqlDB, err := postgresDB.DB()
+	if err != nil {
+		log.Fatalf("Failed to get underlying sql.DB: %v", err)
+	}
+	defer sqlDB.Close()
+
+	// Safe defaults for hosted Postgres / poolers, while still fine locally
+	sqlDB.SetMaxOpenConns(10)
+	sqlDB.SetMaxIdleConns(5)
+	sqlDB.SetConnMaxLifetime(time.Hour)
+
 	st := postgres.NewPostgresStore(postgresDB)
 
 	systemPrompt := agent.GetDefaultSystemPrompt()
@@ -45,19 +57,14 @@ func main() {
 	}
 	ctx := context.Background()
 
-	// For now, use FakeProviders so the server runs without API keys.
-	// Next iteration, we wire real providers via config.
-	// fpClaude := &llm.FakeProvider{Provider: llm.ProviderClaude, Reply: "claude:ok"}
-	poviderGemini, err := llm.NewGeminiProvider(ctx, cfg.GeminiAPIKey, cfg.GeminiModel)
-	// fpOpenAI := &llm.FakeProvider{Provider: llm.ProviderOpenAI, Reply: "openai:ok"}
-
+	providerGemini, err := llm.NewGeminiProvider(ctx, cfg.GeminiAPIKey, cfg.GeminiModel)
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	r := &router.Router{
 		Claude: &llm.FakeProvider{Provider: llm.ProviderClaude, Reply: "Claude not implemented yet"},
-		Gemini: poviderGemini,
+		Gemini: providerGemini,
 		OpenAI: &llm.FakeProvider{Provider: llm.ProviderOpenAI, Reply: "fallback not implemented yet"},
 	}
 
@@ -67,41 +74,37 @@ func main() {
 		Router:  r,
 	}
 
-	// Auth APIs
 	authSvc := auth.NewService(st)
 	authHandler := &httpapi.AuthHandler{AuthSvc: authSvc}
 
 	s := httpapi.NewServer()
-	s.Handle("POST /v1/register", http.HandlerFunc(authHandler.Register))
+
+	s.Handle("GET /health", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}))
+
+	// s.Handle("POST /v1/register", http.HandlerFunc(authHandler.Register))
 	s.Handle("POST /v1/login", http.HandlerFunc(authHandler.Login))
 
-	// --- 定义安保链 ---
-	// 这里可以包含多个中间件，比如 [Logging, Auth]
 	protectedChain := middleware.CreateChain(
 		middleware.AuthMiddleware,
 	)
 
-	// /me 接口
 	s.Handle("GET /v1/me", protectedChain(http.HandlerFunc(authHandler.GetMe)))
 
-	// Chat & Stream APIs
-	// 1. /chat 接口
-	// 先包装业务逻辑，再套上 TokenUsage，最后套上 Auth 保安
 	chatHandler := &httpapi.ChatHandler{Agent: svc}
-	// 注意：我们可以嵌套使用中间件
 	s.Handle("POST /v1/chat", protectedChain(middleware.TokenUsageInterceptor(chatHandler)))
-	// 2. /chat/stream 接口
+
 	streamHandler := &httpapi.ChatStreamHandler{Agent: svc}
 	s.Handle("POST /v1/chat/stream", protectedChain(streamHandler))
-	// 3. /conversations 接口
+
 	s.Handle("GET /v1/conversations", protectedChain(http.HandlerFunc(chatHandler.ListConversations)))
-	// 4. /conversations/{id}/messages 接口
 	s.Handle("GET /v1/conversations/{id}/messages", protectedChain(http.HandlerFunc(chatHandler.ListConversationMessages)))
 
-	addr := ":" + port
-	log.Printf("rhea-api listening on %s", addr)
-	// --- 这里的修改是关键 ---
-	// 用 CORS 中间件包裹所有的路由处理器
 	handlerWithCORS := middleware.CORS(s.Handler())
+
+	addr := "0.0.0.0:" + port
+	log.Printf("rhea-api listening on %s", addr)
 	log.Fatal(http.ListenAndServe(addr, handlerWithCORS))
 }
