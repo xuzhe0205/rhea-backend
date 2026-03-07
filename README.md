@@ -1,1 +1,3 @@
-# Rhea
+# rhea-backend
+
+Project RHEA
