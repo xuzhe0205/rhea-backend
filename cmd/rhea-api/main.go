@@ -100,5 +100,8 @@ func main() {
 
 	addr := ":" + port
 	log.Printf("rhea-api listening on %s", addr)
-	log.Fatal(http.ListenAndServe(addr, s.Handler()))
+	// --- 这里的修改是关键 ---
+	// 用 CORS 中间件包裹所有的路由处理器
+	handlerWithCORS := middleware.CORS(s.Handler())
+	log.Fatal(http.ListenAndServe(addr, handlerWithCORS))
 }
