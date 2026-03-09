@@ -44,24 +44,24 @@ func isGeminiUsageOverThreshold() bool {
 }
 
 func isCoding(s string) bool {
-	s = strings.ToLower(s)
+	// s = strings.ToLower(s)
 
-	// Cheap heuristics. We'll improve later.
-	if strings.Contains(s, "```") {
-		return true
-	}
-	if strings.Contains(s, "error") || strings.Contains(s, "stack trace") {
-		return true
-	}
-	if strings.Contains(s, "golang") || strings.Contains(s, "java") || strings.Contains(s, "python") {
-		return true
-	}
-	if strings.Contains(s, "compile") || strings.Contains(s, "build failed") {
-		return true
-	}
-	if strings.Contains(s, "func ") || strings.Contains(s, "class ") {
-		return true
-	}
+	// // Cheap heuristics. We'll improve later.
+	// if strings.Contains(s, "```") {
+	// 	return true
+	// }
+	// if strings.Contains(s, "error") || strings.Contains(s, "stack trace") {
+	// 	return true
+	// }
+	// if strings.Contains(s, "golang") || strings.Contains(s, "java") || strings.Contains(s, "python") {
+	// 	return true
+	// }
+	// if strings.Contains(s, "compile") || strings.Contains(s, "build failed") {
+	// 	return true
+	// }
+	// if strings.Contains(s, "func ") || strings.Contains(s, "class ") {
+	// 	return true
+	// }
 	// if IsCodingIntent(s) {
 	// 	return true
 	// }
