@@ -9,6 +9,8 @@ import (
 	"github.com/google/uuid"
 )
 
+const TokenExpiration = 7 * 24 * time.Hour
+
 func getJWTKey() []byte {
 	secret := os.Getenv("JWT_SECRET")
 	if secret == "" {
@@ -22,9 +24,9 @@ type Claims struct {
 	jwt.RegisteredClaims
 }
 
-// GenerateToken 为用户生成一个有效期为 24 小时的 JWT
+// GenerateToken 为用户生成一个有效期为 7天的 JWT
 func GenerateToken(userID uuid.UUID) (string, error) {
-	expirationTime := time.Now().Add(24 * time.Hour)
+	expirationTime := time.Now().Add(TokenExpiration)
 	claims := &Claims{
 		UserID: userID,
 		RegisteredClaims: jwt.RegisteredClaims{
