@@ -92,7 +92,7 @@ func (s *Service) Chat(ctx context.Context, conversationID string, userText stri
 	}
 
 	// 5) Choose provider
-	providerPriorityChain := s.Router.ChooseChain(userText)
+	providerPriorityChain := s.Router.ChooseChain(ctx, userText)
 	if len(providerPriorityChain) == 0 {
 		return "", "", ErrNoProvider
 	}

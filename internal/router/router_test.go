@@ -1,72 +1,105 @@
 package router
 
 import (
+	"context"
 	"testing"
 
 	"rhea-backend/internal/llm"
 )
 
-func TestRouter_Choose_CodingGoesToClaude(t *testing.T) {
+func TestRouter_ChooseChain_CodingHeuristic(t *testing.T) {
+	// 1. 强特征抢跑测试：包含代码块
 	r := &Router{
-		Claude: &llm.FakeProvider{Provider: llm.ProviderClaude},
-		Gemini: &llm.FakeProvider{Provider: llm.ProviderGemini},
-		OpenAI: &llm.FakeProvider{Provider: llm.ProviderOpenAI},
+		GeminiPro:   &llm.FakeProvider{Reply: "I am Pro"},
+		GeminiFlash: &llm.FakeProvider{Reply: "I am Flash"},
+		GeminiLite:  &llm.FakeProvider{Reply: "SIMPLE"}, // 即使 Lite 返回 SIMPLE，强特征也应覆盖它
 	}
 
-	p := r.Choose("Here is my code:\n```go\nfunc main() {}\n```")
-	if p == nil || p.Name() != llm.ProviderClaude {
-		t.Fatalf("expected claude, got %#v", p)
+	ctx := context.Background()
+	// 包含 ``` 代码块
+	chain := r.ChooseChain(ctx, "How to fix this: ```go\nfmt.Println(x)\n```")
+
+	if len(chain) == 0 || chain[0] != r.GeminiPro {
+		t.Errorf("Expected GeminiPro for coding heuristic, got %v", chain[0])
 	}
 }
 
-func TestRouter_Choose_GeneralGoesToGemini(t *testing.T) {
+func TestRouter_ChooseChain_SimpleIntent(t *testing.T) {
+	// 2. 模拟 Lite 分类为 SIMPLE
+	pLite := &llm.FakeProvider{Reply: "SIMPLE"}
+	pFlash := &llm.FakeProvider{Reply: "Flash Reply"}
+	pPro := &llm.FakeProvider{Reply: "Pro Reply"}
+
 	r := &Router{
-		Claude: &llm.FakeProvider{Provider: llm.ProviderClaude},
-		Gemini: &llm.FakeProvider{Provider: llm.ProviderGemini},
-		OpenAI: &llm.FakeProvider{Provider: llm.ProviderOpenAI},
+		GeminiLite:  pLite,
+		GeminiFlash: pFlash,
+		GeminiPro:   pPro,
 	}
 
-	p := r.Choose("What's a good travel plan for Montreal in winter?")
-	if p == nil || p.Name() != llm.ProviderGemini {
-		t.Fatalf("expected gemini, got %#v", p)
+	ctx := context.Background()
+	chain := r.ChooseChain(ctx, "Hello, how are you?")
+
+	if len(chain) < 2 {
+		t.Fatalf("Expected chain of at least 2 providers, got %d", len(chain))
+	}
+
+	// 简单问题：Flash 应该在第一位
+	if chain[0] != pFlash {
+		t.Errorf("Expected GeminiFlash first for SIMPLE intent, got %v", chain[0])
 	}
 }
 
-func TestRouter_Choose_FallbackToOpenAIIfNoGemini(t *testing.T) {
+func TestRouter_ChooseChain_DeepIntent(t *testing.T) {
+	// 3. 模拟 Lite 分类为 DEEP
+	pLite := &llm.FakeProvider{Reply: "DEEP"}
+	pFlash := &llm.FakeProvider{Reply: "Flash Reply"}
+	pPro := &llm.FakeProvider{Reply: "Pro Reply"}
+
 	r := &Router{
-		Claude: &llm.FakeProvider{Provider: llm.ProviderClaude},
-		Gemini: nil,
-		OpenAI: &llm.FakeProvider{Provider: llm.ProviderOpenAI},
+		GeminiLite:  pLite,
+		GeminiFlash: pFlash,
+		GeminiPro:   pPro,
 	}
 
-	p := r.Choose("Tell me a joke")
-	if p == nil || p.Name() != llm.ProviderOpenAI {
-		t.Fatalf("expected openai, got %#v", p)
+	ctx := context.Background()
+	chain := r.ChooseChain(ctx, "Explain the difference between JWT and OAuth2 in detail.")
+
+	if len(chain) < 2 {
+		t.Fatalf("Expected chain of at least 2 providers, got %d", len(chain))
+	}
+
+	// 深度问题：Pro 应该在第一位
+	if chain[0] != pPro {
+		t.Errorf("Expected GeminiPro first for DEEP intent, got %v", chain[0])
 	}
 }
 
-func TestRouter_Choose_CodingFallsBackIfNoClaude(t *testing.T) {
+func TestRouter_ChooseChain_LiteFailureFallback(t *testing.T) {
+	// 4. 模拟 Lite 模型挂了的情况
+	pLite := &llm.FakeProvider{Err: context.DeadlineExceeded}
+	pPro := &llm.FakeProvider{Reply: "Pro"}
+
 	r := &Router{
-		Claude: nil,
-		Gemini: &llm.FakeProvider{Provider: llm.ProviderGemini},
-		OpenAI: &llm.FakeProvider{Provider: llm.ProviderOpenAI},
+		GeminiLite: pLite,
+		GeminiPro:  pPro,
 	}
 
-	p := r.Choose("I'm seeing a compile error in my Go build")
-	if p == nil || p.Name() != llm.ProviderGemini {
-		t.Fatalf("expected gemini (no claude available), got %#v", p)
+	ctx := context.Background()
+	chain := r.ChooseChain(ctx, "Normal question")
+
+	// 此时逻辑应该进入保底：IntentDeep -> Pro 优先
+	if len(chain) == 0 || chain[0] != pPro {
+		t.Errorf("Expected fallback to GeminiPro when Lite fails, got %v", chain[0])
 	}
 }
 
-func TestRouter_Choose_CodingFallsBackIfNoClaudeNoGemini(t *testing.T) {
-	r := &Router{
-		Claude: nil,
-		Gemini: nil,
-		OpenAI: &llm.FakeProvider{Provider: llm.ProviderOpenAI},
-	}
+func TestRouter_Choose_InternalTask(t *testing.T) {
+	// 5. 测试原有静态 Choose 逻辑（用于标题生成等）
+	pFlash := &llm.FakeProvider{Reply: "Flash"}
+	r := &Router{GeminiFlash: pFlash}
 
-	p := r.Choose("I'm expecting to talk to OpenAI")
-	if p == nil || p.Name() != llm.ProviderOpenAI {
-		t.Fatalf("expected openai (no claude & gemini available), got %#v", p)
+	p := r.Choose("internal_task")
+	if p != pFlash {
+		t.Errorf("Expected GeminiFlash for internal task, got %v", p)
 	}
 }

@@ -1,89 +1,83 @@
 package router
 
 import (
-	"strings"
-
+	"context"
+	"fmt"
 	"rhea-backend/internal/llm"
+	"rhea-backend/internal/model"
+	"strings"
 )
 
 type Router struct {
-	Claude llm.Provider
-	Gemini llm.Provider
-	OpenAI llm.Provider
+	GeminiPro   llm.Provider // 2.5 Pro (深度学习/重构)
+	GeminiFlash llm.Provider // 3.0 Flash (日常问答)
+	GeminiLite  llm.Provider // 3.1 Flash-Lite (极速分类)
 }
 
-// Choose picks a provider based on a v0 heuristic.
-// v0 rule: if looks like coding -> Claude, else -> Gemini, fallback -> OpenAI
-func (r *Router) Choose(userText string) llm.Provider {
-	if isCoding(userText) && r.Claude != nil {
-		return r.Claude
+const (
+	IntentSimple = "SIMPLE" // 对应 Flash
+	IntentDeep   = "DEEP"   // 对应 Pro
+)
+
+// IntentPrompt 极其精简，确保 Lite 响应在 300ms 内
+const IntentPrompt = `Task: Determine if the query requires HIGH-REASONING (DEEP) or STANDARD-RESPONSE (SIMPLE).
+
+- SIMPLE: Routine inquiries, factual retrieval, creative drafting, instruction following, or general explanations. This includes long processes like recipes or history if they don't require logical troubleshooting.
+- DEEP: Requires multi-layered logical deduction, architectural system design, resolving conflicting constraints, or high-stakes professional auditing.
+
+Strategy: 
+1. If the request is a direct question about "how to do X" or "what is Y", classify as SIMPLE.
+2. If the request is "analyze/debug/optimize X based on Y", classify as DEEP.
+3. IF IN DOUBT, CHOOSE SIMPLE.
+
+Output ONLY 'SIMPLE' or 'DEEP'.`
+
+func (r *Router) ChooseChain(ctx context.Context, userText string) []llm.Provider {
+	// 1. 强特征抢跑：如果有明显的代码块，直接上 Pro，省去一次意图检查
+	if strings.Contains(userText, "```") || strings.Contains(userText, "func ") {
+		return []llm.Provider{r.GeminiPro, r.GeminiFlash}
 	}
-	if r.Gemini != nil {
-		return r.Gemini
+
+	// 2. 调用极速分类器 (Lite)
+	intent := r.classifyIntent(ctx, userText)
+	fmt.Printf("[Router] Classified Intent: %s\n", intent)
+
+	if intent == IntentSimple {
+		// 简单问题：Flash 优先，Pro 保底
+		return []llm.Provider{r.GeminiFlash, r.GeminiPro}
 	}
-	return r.OpenAI
+
+	// 深度问题：Pro 优先，Flash 保底
+	return []llm.Provider{r.GeminiPro, r.GeminiFlash}
 }
 
-func (r *Router) ChooseChain(userText string) []llm.Provider {
-	var providerPriorityChain []llm.Provider
-	if isCoding(userText) && r.Claude != nil {
-		providerPriorityChain = append(providerPriorityChain, r.Claude, r.Gemini, r.OpenAI)
-	} else if isGeminiUsageOverThreshold() {
-		providerPriorityChain = append(providerPriorityChain, r.Gemini, r.OpenAI, r.Claude)
-	} else {
-		providerPriorityChain = append(providerPriorityChain, r.OpenAI, r.Gemini, r.Claude)
+func (r *Router) classifyIntent(ctx context.Context, text string) string {
+	if r.GeminiLite == nil {
+		return IntentDeep
 	}
-	return providerPriorityChain
-}
 
-func isGeminiUsageOverThreshold() bool {
-	// TODO: check token usage for the given Gemini model, if token >= free tier threshold, switch to fallback LLM.
-	// If all LLMs are exceeding their free-tier threshold, just use Gemini. For now just always true.
-	// resp, err := client.Models.GenerateContent(ctx, modelName, contents, nil) --> usage := resp.UsageMetadata --> ...
-	return true
-}
-
-func isCoding(s string) bool {
-	// s = strings.ToLower(s)
-
-	// // Cheap heuristics. We'll improve later.
-	// if strings.Contains(s, "```") {
-	// 	return true
-	// }
-	// if strings.Contains(s, "error") || strings.Contains(s, "stack trace") {
-	// 	return true
-	// }
-	// if strings.Contains(s, "golang") || strings.Contains(s, "java") || strings.Contains(s, "python") {
-	// 	return true
-	// }
-	// if strings.Contains(s, "compile") || strings.Contains(s, "build failed") {
-	// 	return true
-	// }
-	// if strings.Contains(s, "func ") || strings.Contains(s, "class ") {
-	// 	return true
-	// }
-	// if IsCodingIntent(s) {
-	// 	return true
-	// }
-	return false
-}
-
-func IsCodingIntent(query string) bool {
-	query = strings.ToLower(query)
-
-	hasAction := containsAny(query, "script", "code", "debug", "implement", "function")
-	hasTech := containsAny(query, "s3", "api", "json", "database", "python", "java")
-
-	// If it has a coding action OR mentions a specific tech stack, route it.
-	return hasAction || hasTech
-}
-
-// Helper to keep the main logic clean
-func containsAny(s string, keywords ...string) bool {
-	for _, k := range keywords {
-		if strings.Contains(s, k) {
-			return true
-		}
+	msgs := []model.Message{
+		{Role: model.RoleSystem, Content: IntentPrompt},
+		{Role: model.RoleUser, Content: text},
 	}
-	return false
+
+	// 使用非流式调用，只拿一个词
+	res, err := r.GeminiLite.Chat(ctx, msgs)
+	if err != nil {
+		return IntentDeep // 出错保底用 Pro
+	}
+
+	res = strings.TrimSpace(strings.ToUpper(res))
+	if strings.Contains(res, IntentSimple) {
+		return IntentSimple
+	}
+	return IntentDeep
+}
+
+// 保留原有的 Choose 逻辑用于内部任务（如标题生成）
+func (r *Router) Choose(taskType string) llm.Provider {
+	if taskType == "internal_task" {
+		return r.GeminiFlash // 标题生成用 Flash 足够快且稳
+	}
+	return r.GeminiFlash
 }

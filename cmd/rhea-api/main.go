@@ -41,7 +41,6 @@ func main() {
 	}
 	defer sqlDB.Close()
 
-	// Safe defaults for hosted Postgres / poolers, while still fine locally
 	sqlDB.SetMaxOpenConns(10)
 	sqlDB.SetMaxIdleConns(5)
 	sqlDB.SetConnMaxLifetime(time.Hour)
@@ -57,16 +56,34 @@ func main() {
 	}
 	ctx := context.Background()
 
-	providerGemini, err := llm.NewGeminiProvider(ctx, cfg.GeminiAPIKey, cfg.GeminiModel)
+	// --- 🚀 RHEA 多模型分层初始化 ---
+
+	// 1. Pro: 深度导师 (高智商，给 0.8 的温度保持一点启发性)
+	pPro, err := llm.NewGeminiProvider(ctx, cfg.GeminiAPIKey, cfg.ModelPro, 0.8)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("Failed to init Gemini Pro: %v", err)
 	}
 
-	r := &router.Router{
-		Claude: &llm.FakeProvider{Provider: llm.ProviderClaude, Reply: "Claude not implemented yet"},
-		Gemini: providerGemini,
-		OpenAI: &llm.FakeProvider{Provider: llm.ProviderOpenAI, Reply: "fallback not implemented yet"},
+	// 2. Flash: 快速助手 (平衡性能，给 0.7)
+	pFlash, err := llm.NewGeminiProvider(ctx, cfg.GeminiAPIKey, cfg.ModelFlash, 0.7)
+	if err != nil {
+		log.Fatalf("Failed to init Gemini Flash: %v", err)
 	}
+
+	// 3. Lite: 极速分类器 (只需 0.1 温度确保分类结果稳定)
+	pLite, err := llm.NewGeminiProvider(ctx, cfg.GeminiAPIKey, cfg.ModelLite, 0.1)
+	if err != nil {
+		log.Fatalf("Failed to init Gemini Lite: %v", err)
+	}
+
+	// 装配智能路由器
+	r := &router.Router{
+		GeminiPro:   pPro,
+		GeminiFlash: pFlash,
+		GeminiLite:  pLite,
+	}
+
+	// --- 🚀 初始化核心 Service ---
 
 	svc := &agent.Service{
 		Store:   st,
@@ -79,12 +96,13 @@ func main() {
 
 	s := httpapi.NewServer()
 
+	// 健康检查
 	s.Handle("GET /health", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	}))
 
-	// s.Handle("POST /v1/register", http.HandlerFunc(authHandler.Register))
+	// 身份验证
 	s.Handle("POST /v1/login", http.HandlerFunc(authHandler.Login))
 
 	protectedChain := middleware.CreateChain(
@@ -93,6 +111,7 @@ func main() {
 
 	s.Handle("GET /v1/me", protectedChain(http.HandlerFunc(authHandler.GetMe)))
 
+	// 聊天相关
 	chatHandler := &httpapi.ChatHandler{Agent: svc}
 	s.Handle("POST /v1/chat", protectedChain(middleware.TokenUsageInterceptor(chatHandler)))
 
@@ -105,6 +124,6 @@ func main() {
 	handlerWithCORS := middleware.CORS(s.Handler())
 
 	addr := "0.0.0.0:" + port
-	log.Printf("rhea-api listening on %s", addr)
+	log.Printf("rhea-api listening on %s (Intelligent Routing Enabled ⚡)", addr)
 	log.Fatal(http.ListenAndServe(addr, handlerWithCORS))
 }

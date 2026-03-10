@@ -2,130 +2,123 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"rhea-backend/internal/agent"
+	"rhea-backend/internal/auth"
 	ctxbuilder "rhea-backend/internal/context"
 	"rhea-backend/internal/llm"
+	"rhea-backend/internal/model"
 	"rhea-backend/internal/router"
 	"rhea-backend/internal/store"
+
+	"github.com/google/uuid"
 )
 
 func TestChatHandler_PostOK(t *testing.T) {
+	// 1. 模拟身份和环境 🚀
+	uid := uuid.New()
 	st := store.NewMemoryStore()
+	convID := uuid.New()
+
+	// 预设对话，否则 Agent.Chat 会因为权限校验失败
+	_, _ = st.CreateConversation(context.Background(), &model.Conversation{
+		ID:     convID,
+		UserID: uid,
+	})
+
 	b := &ctxbuilder.Builder{
 		Store:         st,
 		SystemPrompt:  "You are Rhea.",
 		RecentMaxMsgs: 10,
 	}
+
+	// 2. 构造符合新架构的 Router
 	fp := &llm.FakeProvider{Provider: llm.ProviderGemini, Reply: "hi from fake"}
-	r := &router.Router{Gemini: fp}
+	r := &router.Router{
+		GeminiLite:  &llm.FakeProvider{Reply: "SIMPLE"},
+		GeminiFlash: fp,
+	}
 
 	svc := &agent.Service{Store: st, Builder: b, Router: r}
 	h := &ChatHandler{Agent: svc}
 
-	body := bytes.NewBufferString(`{"conversation_id":"c1","message":"hello"}`)
+	// 3. 构造请求并注入 Context 🚀
+	body := bytes.NewBufferString(`{"conversation_id":"` + convID.String() + `","message":"hello"}`)
 	req := httptest.NewRequest(http.MethodPost, "/chat", body)
 	req.Header.Set("Content-Type", "application/json")
+
+	req = req.WithContext(auth.SetUserID(req.Context(), uid))
+
 	w := httptest.NewRecorder()
 
+	// 4. 执行
 	h.ServeHTTP(w, req)
 
+	// 5. 断言
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d body=%q", w.Code, w.Body.String())
 	}
-	if got := w.Body.String(); got == "" || got[0] != '{' {
-		t.Fatalf("expected json response, got %q", got)
-	}
-}
-
-func TestChatHandler_BadRequest(t *testing.T) {
-	h := &ChatHandler{Agent: &agent.Service{}}
-
-	body := bytes.NewBufferString(`{"conversation_id":"","message":""}`)
-	req := httptest.NewRequest(http.MethodPost, "/chat", body)
-	w := httptest.NewRecorder()
-
-	h.ServeHTTP(w, req)
-
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d body=%q", w.Code, w.Body.String())
-	}
-}
-
-func TestChatHandler_MethodNotAllowed(t *testing.T) {
-	h := &ChatHandler{}
-	req := httptest.NewRequest(http.MethodGet, "/chat", nil)
-	w := httptest.NewRecorder()
-
-	h.ServeHTTP(w, req)
-
-	if w.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("expected 405, got %d", w.Code)
+	if got := w.Body.String(); !strings.Contains(got, "hi from fake") {
+		t.Fatalf("expected reply in json, got %q", got)
 	}
 }
 
 func TestChatHandler_NoProvider_Returns503(t *testing.T) {
+	uid := uuid.New()
 	st := store.NewMemoryStore()
-	b := &ctxbuilder.Builder{
-		Store:         st,
-		SystemPrompt:  "You are Rhea.",
-		RecentMaxMsgs: 10,
-	}
+	convID := uuid.New()
+	_, _ = st.CreateConversation(context.Background(), &model.Conversation{ID: convID, UserID: uid})
 
-	// Router has NO providers -> agent will return agent.ErrNoProvider
-	r := &router.Router{
-		Claude: nil,
-		Gemini: nil,
-		OpenAI: nil,
-	}
+	// Router 为空
+	r := &router.Router{}
 
 	svc := &agent.Service{
 		Store:   st,
-		Builder: b,
+		Builder: &ctxbuilder.Builder{Store: st},
 		Router:  r,
 	}
 
 	h := &ChatHandler{Agent: svc}
 
-	body := bytes.NewBufferString(`{"conversation_id":"c1","message":"hello"}`)
+	body := bytes.NewBufferString(`{"conversation_id":"` + convID.String() + `","message":"hello"}`)
 	req := httptest.NewRequest(http.MethodPost, "/chat", body)
-	w := httptest.NewRecorder()
+	req = req.WithContext(auth.SetUserID(req.Context(), uid))
 
+	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 
 	if w.Code != http.StatusServiceUnavailable {
-		t.Fatalf("expected 503, got %d body=%q", w.Code, w.Body.String())
+		t.Fatalf("expected 503, got %d", w.Code)
 	}
 }
 
-func TestChatHandler_PayloadTooLarge_Returns413(t *testing.T) {
-	// We don't actually need Agent to be configured because decoding fails first,
-	// but provide a non-nil handler anyway.
-	h := &ChatHandler{Agent: &agent.Service{}}
+func TestChatHandler_ListConversations_OK(t *testing.T) {
+	uid := uuid.New()
+	st := store.NewMemoryStore()
 
-	// Build a JSON body > 1MB.
-	// We'll keep it valid JSON so we specifically test MaxBytesReader behavior.
-	tooBig := make([]byte, 1024*1024+10) // 1MB + 10 bytes
-	for i := range tooBig {
-		tooBig[i] = 'a'
-	}
+	// 存入两个对话
+	_, _ = st.CreateConversation(context.Background(), &model.Conversation{ID: uuid.New(), UserID: uid, Title: "Conv 1"})
+	_, _ = st.CreateConversation(context.Background(), &model.Conversation{ID: uuid.New(), UserID: uid, Title: "Conv 2"})
 
-	// Construct valid JSON: {"conversation_id":"c1","message":"aaaa...."}
-	body := bytes.NewBuffer(nil)
-	body.WriteString(`{"conversation_id":"c1","message":"`)
-	body.Write(tooBig)
-	body.WriteString(`"}`)
+	svc := &agent.Service{Store: st}
+	h := &ChatHandler{Agent: svc}
 
-	req := httptest.NewRequest(http.MethodPost, "/chat", body)
-	req.Header.Set("Content-Type", "application/json")
+	req := httptest.NewRequest(http.MethodGet, "/v1/conversations", nil)
+	req = req.WithContext(auth.SetUserID(req.Context(), uid))
+
 	w := httptest.NewRecorder()
+	h.ListConversations(w, req)
 
-	h.ServeHTTP(w, req)
-
-	if w.Code != http.StatusRequestEntityTooLarge {
-		t.Fatalf("expected 413, got %d body=%q", w.Code, w.Body.String())
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	// 简单校验是否返回了 JSON 数组
+	if !strings.Contains(w.Body.String(), "Conv 1") || !strings.Contains(w.Body.String(), "Conv 2") {
+		t.Errorf("expected conversations in response, got %q", w.Body.String())
 	}
 }

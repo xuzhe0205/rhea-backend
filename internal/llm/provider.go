@@ -16,9 +16,7 @@ const (
 
 type Provider interface {
 	Name() ProviderName
+	ModelName() string // 🚀 新增：返回具体的模型型号，如 "gemini-1.5-pro"
 	Chat(ctx context.Context, messages []model.Message) (string, error)
-
-	// Streaming: provider calls emit(delta) multiple times.
-	// emit should write a chunk to the client (or buffer in tests).
 	Stream(ctx context.Context, messages []model.Message, emit func(delta string) error) error
 }

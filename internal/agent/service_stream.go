@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"strings"
 	"time"
@@ -89,7 +90,8 @@ func (s *Service) ChatStream(
 	}
 
 	// 6) Choose and call provider
-	providerPriorityChain := s.Router.ChooseChain(userText)
+	// 传入 ctx 触发智能路由
+	providerPriorityChain := s.Router.ChooseChain(ctx, userText)
 	if len(providerPriorityChain) == 0 {
 		return "", ErrNoProvider
 	}
@@ -105,6 +107,10 @@ func (s *Service) ChatStream(
 		hasPickedProvider = true
 		// 🚀 关键：每次尝试新的 Provider 前，重置 Builder
 		sb.Reset()
+		// 🚀 核心改动：在发送正式内容前，先 emit 一个标识包
+		// 使用特殊的识别前缀，方便前端拦截
+		modelInfo := fmt.Sprintf("::__metadata__:model:%s:%s::", p.Name(), p.ModelName())
+		_ = emit(modelInfo)
 		// 7) Stream from provider, while accumulating final reply for persistence
 		lastErr = p.Stream(ctx, msgs, func(delta string) error {
 			sb.WriteString(delta)

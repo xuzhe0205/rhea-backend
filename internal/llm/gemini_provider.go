@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"google.golang.org/genai"
 
@@ -10,13 +11,14 @@ import (
 )
 
 type GeminiProvider struct {
-	Model  string
-	Client *genai.Client
+	Model       string
+	Client      *genai.Client
+	Temperature float32
 }
 
 func (p *GeminiProvider) Name() ProviderName { return ProviderGemini }
 
-func NewGeminiProvider(ctx context.Context, apiKey string, model string) (*GeminiProvider, error) {
+func NewGeminiProvider(ctx context.Context, apiKey string, model string, temp float32) (*GeminiProvider, error) {
 	c, err := genai.NewClient(ctx, &genai.ClientConfig{
 		APIKey:  apiKey,
 		Backend: genai.BackendGeminiAPI,
@@ -25,24 +27,36 @@ func NewGeminiProvider(ctx context.Context, apiKey string, model string) (*Gemin
 		return nil, err
 	}
 	if model == "" {
-		// Free tier
 		model = "gemini-2.5-flash"
 	}
-	return &GeminiProvider{Model: model, Client: c}, nil
+	return &GeminiProvider{
+		Model:       model,
+		Client:      c,
+		Temperature: temp,
+	}, nil
 }
 
 // Chat implements Provider.Chat (non-streaming).
 func (p *GeminiProvider) Chat(ctx context.Context, msgs []model.Message) (string, error) {
 	contents := toGenAIContents(msgs)
+	cfg := &genai.GenerateContentConfig{}
 
-	// 创建配置并添加工具
-	cfg := &genai.GenerateContentConfig{
-		Tools: []*genai.Tool{
-			{GoogleSearch: &genai.GoogleSearch{}}, // 新 SDK 开启联网的方式
-		},
+	// 1. 应用结构体中的 Temperature (处理指针问题)
+	t := p.Temperature
+	cfg.Temperature = &t
+
+	isLite := strings.Contains(strings.ToLower(p.Model), "lite")
+
+	if isLite {
+		cfg.MaxOutputTokens = 10
+		// Lite 强制不联网以保证极致速度
+	} else {
+		cfg.Tools = []*genai.Tool{
+			{GoogleSearch: &genai.GoogleSearch{}},
+		}
 	}
 
-	resp, err := p.Client.Models.GenerateContent(ctx, p.Model, contents, cfg) // 传入 cfg
+	resp, err := p.Client.Models.GenerateContent(ctx, p.Model, contents, cfg)
 	if err != nil {
 		return "", err
 	}
@@ -59,16 +73,22 @@ func (p *GeminiProvider) Chat(ctx context.Context, msgs []model.Message) (string
 
 // Stream implements Provider.ChatStream (streaming).
 func (p *GeminiProvider) Stream(ctx context.Context, msgs []model.Message, emit func(delta string) error) error {
-
 	systemText, contents := extractSystemPrompt(msgs)
 
+	// 同样处理 Temperature 指针
+	t := p.Temperature
+
 	cfg := &genai.GenerateContentConfig{
-		// 关键：把 System 指令放在它该在的位置
 		SystemInstruction: &genai.Content{
 			Parts: []*genai.Part{{Text: systemText}},
 		},
-		// 顺便把 Grounding 加上，如果你想的话
-		Tools: []*genai.Tool{{GoogleSearch: &genai.GoogleSearch{}}},
+		Temperature: &t, // 👈 应用新增字段
+		Tools:       []*genai.Tool{{GoogleSearch: &genai.GoogleSearch{}}},
+	}
+
+	// Lite 模型通常不用于 Stream，但为了代码健壮性，我们可以加个判断
+	if strings.Contains(strings.ToLower(p.Model), "lite") {
+		cfg.Tools = nil
 	}
 
 	iter := p.Client.Models.GenerateContentStream(ctx, p.Model, contents, cfg)
@@ -138,4 +158,8 @@ func toGenAIContents(msgs []model.Message) []*genai.Content {
 		})
 	}
 	return out
+}
+
+func (p *GeminiProvider) ModelName() string {
+	return p.Model
 }

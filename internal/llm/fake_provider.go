@@ -52,3 +52,5 @@ func (p *FakeProvider) Stream(ctx context.Context, messages []model.Message, emi
 	}
 	return emit(reply)
 }
+
+func (f *FakeProvider) ModelName() string { return "fake-model-v1" } // 🚀 必须实现
