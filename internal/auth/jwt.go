@@ -9,7 +9,7 @@ import (
 	"github.com/google/uuid"
 )
 
-const TokenExpiration = 7 * 24 * time.Hour
+const TokenExpiration = 30 * 24 * time.Hour
 
 func getJWTKey() []byte {
 	secret := os.Getenv("JWT_SECRET")
