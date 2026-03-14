@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"rhea-backend/internal/agent"
 	"rhea-backend/internal/auth"
@@ -72,10 +74,14 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	reply, conversationID, err := h.Agent.Chat(r.Context(), req.ConversationID, req.Message)
-	if errors.Is(err, agent.ErrNoProvider) {
-		http.Error(w, err.Error(), http.StatusServiceUnavailable)
-		return
-	} else if err != nil {
+	if err != nil {
+		// 🚀 使用更稳健的错误识别
+		if errors.Is(err, agent.ErrNoProvider) || strings.Contains(err.Error(), "no provider") {
+			http.Error(w, err.Error(), http.StatusServiceUnavailable) // 503
+			return
+		}
+		// 记录真实的错误到日志，方便调试，但返回 500 给前端
+		log.Printf("[ChatHandler] Unexpected error: %v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -181,4 +187,42 @@ func (h *ChatHandler) ListConversationMessages(w http.ResponseWriter, r *http.Re
 	}
 
 	_ = json.NewEncoder(w).Encode(msgs)
+}
+
+// GetConversationTokenSum 处理 GET /v1/conversations/{id}/token-sum
+func (h *ChatHandler) GetConversationTokenSum(w http.ResponseWriter, r *http.Request) {
+	// 1. 提取 UserID (安全第一)
+	userID, ok := auth.GetUserID(r.Context())
+	if !ok {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// 2. 提取路径参数 id
+	convIDStr := r.PathValue("id")
+	if convIDStr == "" {
+		http.Error(w, "missing conversation id", http.StatusBadRequest)
+		return
+	}
+
+	// 3. 调用 Service 获取数据
+	// 注意：我们可以直接重用 GetConversation，或者专门写一个轻量方法
+	conv, err := h.Agent.GetConversation(r.Context(), convIDStr)
+	if err != nil {
+		http.Error(w, "Conversation not found", http.StatusNotFound)
+		return
+	}
+
+	// 4. 权限检查：防止 A 用户查询 B 用户的 Token
+	if conv.UserID != userID {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	// 5. 返回结果
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"conversation_id": conv.ID,
+		"token_sum":       conv.CumulativeTokens,
+	})
 }

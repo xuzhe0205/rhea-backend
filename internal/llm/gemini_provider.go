@@ -37,42 +37,50 @@ func NewGeminiProvider(ctx context.Context, apiKey string, model string, temp fl
 }
 
 // Chat implements Provider.Chat (non-streaming).
-func (p *GeminiProvider) Chat(ctx context.Context, msgs []model.Message) (string, error) {
-	contents := toGenAIContents(msgs)
-	cfg := &genai.GenerateContentConfig{}
+func (p *GeminiProvider) Chat(ctx context.Context, msgs []model.Message) (ChatResponse, error) {
+	// 统一使用 extractSystemPrompt
+	systemText, contents := extractSystemPrompt(msgs)
 
-	// 1. 应用结构体中的 Temperature (处理指针问题)
 	t := p.Temperature
-	cfg.Temperature = &t
+	cfg := &genai.GenerateContentConfig{
+		SystemInstruction: &genai.Content{
+			Parts: []*genai.Part{{Text: systemText}},
+		},
+		Temperature: &t,
+	}
 
+	// 针对 Lite/Pro 的差异化配置
 	isLite := strings.Contains(strings.ToLower(p.Model), "lite")
-
 	if isLite {
 		cfg.MaxOutputTokens = 10
-		// Lite 强制不联网以保证极致速度
 	} else {
-		cfg.Tools = []*genai.Tool{
-			{GoogleSearch: &genai.GoogleSearch{}},
-		}
+		cfg.Tools = []*genai.Tool{{GoogleSearch: &genai.GoogleSearch{}}}
 	}
 
 	resp, err := p.Client.Models.GenerateContent(ctx, p.Model, contents, cfg)
 	if err != nil {
-		return "", err
+		return ChatResponse{}, err
 	}
 	// SDK provides helpers, but this is robust enough for v1:
 	if len(resp.Candidates) == 0 || resp.Candidates[0].Content == nil || len(resp.Candidates[0].Content.Parts) == 0 {
-		return "", fmt.Errorf("gemini: empty response")
+		return ChatResponse{}, fmt.Errorf("gemini: empty response")
 	}
 	// Usually first text part:
 	if t := resp.Candidates[0].Content.Parts[0].Text; t != "" {
-		return t, nil
+		return ChatResponse{
+			Content: t,
+			Usage: Usage{
+				InputTokens:  int(resp.UsageMetadata.PromptTokenCount),
+				OutputTokens: int(resp.UsageMetadata.CandidatesTokenCount),
+				ModelName:    p.Model,
+			},
+		}, nil
 	}
-	return resp.Text(), nil
+	return ChatResponse{}, fmt.Errorf("gemini: unexpected empty text part")
 }
 
 // Stream implements Provider.ChatStream (streaming).
-func (p *GeminiProvider) Stream(ctx context.Context, msgs []model.Message, emit func(delta string) error) error {
+func (p *GeminiProvider) Stream(ctx context.Context, msgs []model.Message, emit func(delta string, usage *Usage) error) error {
 	systemText, contents := extractSystemPrompt(msgs)
 
 	// 同样处理 Temperature 指针
@@ -96,16 +104,25 @@ func (p *GeminiProvider) Stream(ctx context.Context, msgs []model.Message, emit 
 		if err != nil {
 			return err
 		}
-		// Same pattern as the official example prints each chunk's text part. :contentReference[oaicite:4]{index=4}
-		if len(resp.Candidates) == 0 || resp.Candidates[0].Content == nil || len(resp.Candidates[0].Content.Parts) == 0 {
-			continue
+		var delta string
+		if len(resp.Candidates) > 0 && resp.Candidates[0].Content != nil && len(resp.Candidates[0].Content.Parts) > 0 {
+			delta = resp.Candidates[0].Content.Parts[0].Text
 		}
-		delta := resp.Candidates[0].Content.Parts[0].Text
-		if delta == "" {
-			continue
+		// --- 核心修改：提取并传递 Usage ---
+		var u *Usage
+		if resp.UsageMetadata != nil {
+			u = &Usage{
+				InputTokens:  int(resp.UsageMetadata.PromptTokenCount),
+				OutputTokens: int(resp.UsageMetadata.CandidatesTokenCount),
+				ModelName:    p.Model,
+			}
 		}
-		if err := emit(delta); err != nil {
-			return err
+
+		// 即使 delta 为空，如果 u 不为空（最后一次 metadata），也得发出去
+		if delta != "" || u != nil {
+			if err := emit(delta, u); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

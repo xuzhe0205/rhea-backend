@@ -10,6 +10,7 @@ import (
 
 	"rhea-backend/internal/auth"
 	ctxbuilder "rhea-backend/internal/context"
+	"rhea-backend/internal/llm"
 	"rhea-backend/internal/model"
 	"rhea-backend/internal/router"
 	"rhea-backend/internal/store"
@@ -98,7 +99,7 @@ func (s *Service) Chat(ctx context.Context, conversationID string, userText stri
 	}
 
 	// 6) Call provider
-	var lastReply string
+	var lastReply llm.ChatResponse
 	var lastErr error
 
 	hasPickedProvider := false
@@ -110,9 +111,8 @@ func (s *Service) Chat(ctx context.Context, conversationID string, userText stri
 		lastReply, lastErr = p.Chat(ctx, msgs)
 		if lastErr == nil {
 			break
-		} else {
-			log.Printf("[Chat Service] AI reply failed: %v. Agent: %v", lastErr, p.Name())
 		}
+		log.Printf("[Chat Service] AI reply failed: %v. Agent: %v", lastErr, p.Name())
 	}
 	if !hasPickedProvider {
 		return "", "", ErrNoProvider
@@ -121,57 +121,72 @@ func (s *Service) Chat(ctx context.Context, conversationID string, userText stri
 		return "", "", lastErr
 	}
 
-	// 7) Persist assistant reply only on success
+	// 7) 存储 AI 回复
+	// 🚀 我们需要修改 AppendMessage 的签名，支持传入 Input/Output Tokens
 	aiMsgID, err := s.Store.AppendMessage(ctx, conversationID, &newUserMsgID, model.Message{
-		Role:    model.RoleAssistant,
-		Content: lastReply,
+		Role:         model.RoleAssistant,
+		Content:      lastReply.Content,
+		InputTokens:  lastReply.Usage.InputTokens,  // 🚀 记录消耗
+		OutputTokens: lastReply.Usage.OutputTokens, // 🚀 记录消耗
 	}, nil)
 	if err != nil {
 		return "", "", err
 	}
 
-	// 8) 别忘了更新 Conversation 的 LastMsgID
-	// 这样下次 Chat 进来时，parentID 就能拿到这条 AI 消息的 ID
-	err = s.Store.UpdateConversationStatus(ctx, conversationID, aiMsgID, parentID, 0)
+	// 8) 更新 Conversation 状态并原子累加 Token
+	// 🚀 我们在这里传入总消耗：Input + Output
+	totalTokens := lastReply.Usage.InputTokens + lastReply.Usage.OutputTokens
+	updatedTotal, err := s.Store.UpdateConversationStatus(ctx, conversationID, aiMsgID, parentID, totalTokens)
 	if err != nil {
 		return "", "", err
 	}
 
-	return lastReply, conversationID, nil
+	// 9) 检查是否触发 Summary 或 100w 提醒 (建议在 UpdateConversationStatus 内部逻辑或此处判断)
+	if updatedTotal > 1000000 {
+		log.Printf("⚠️ [Quota] Conv %s has reached %d tokens!", conversationID, updatedTotal)
+		// 这里的逻辑可以根据你的业务需求扩展，比如发一个特殊的 emit 给前端
+	}
+
+	return lastReply.Content, conversationID, nil
 }
 
 func (s *Service) handleTitleGeneration(conversationID string, firstMsg string) {
-	// 启动协程
 	go func() {
-		// 1. 创建一个独立的、不受主请求生命周期影响的 Context
-		// 使用 context.Background() 确保请求结束后它还能跑
+		// 🚀 1. 终极防御：捕获 Panic，防止毁掉整个进程
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[TitleGen] RECOVERED from panic: %v", r)
+			}
+		}()
+
+		// 🚀 2. 严格的 Nil 检查
+		if s.Router == nil || s.Store == nil {
+			return
+		}
+
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 
-		fmt.Printf("[TitleGen] Starting for conv: %s\n", conversationID)
+		p := s.Router.Choose("internal_task")
+		if p == nil {
+			return
+		}
 
-		// 2. 构造 Prompt
 		msgs := []model.Message{
 			{Role: model.RoleSystem, Content: TitleGeneratorPrompt},
 			{Role: model.RoleUser, Content: "Target Message: " + firstMsg},
 		}
 
-		// 3. 调用 Provider (建议选一个响应快的模型)
-		p := s.Router.Choose("internal_task")
-		title, err := p.Chat(ctx, msgs)
+		titleResponse, err := p.Chat(ctx, msgs)
 		if err != nil {
-			fmt.Printf("[TitleGen] Error generating title: %v\n", err)
 			return
 		}
 
-		// 4. 清洗数据并存入数据库
-		title = strings.Trim(title, "\"\n ")
-		if err := s.Store.UpdateConversationTitle(ctx, conversationID, title); err != nil {
-			fmt.Printf("[TitleGen] Error saving title: %v\n", err)
-			return
-		}
+		title := strings.Trim(titleResponse.Content, "\"\n ")
+		titleDelta := titleResponse.Usage.InputTokens + titleResponse.Usage.OutputTokens
 
-		fmt.Printf("[TitleGen] Success: %s\n", title)
+		_ = s.Store.IncrementConversationTokenUsage(ctx, conversationID, titleDelta)
+		_ = s.Store.UpdateConversationTitle(ctx, conversationID, title)
 	}()
 }
 

@@ -30,8 +30,8 @@ func TestChatStreamHandler_OK_StreamsMetadataAndDeltas(t *testing.T) {
 
 	// 2. 模拟 Provider 和 Router
 	fp := &llm.FakeProvider{
-		Provider: llm.ProviderGemini,
-		Chunks:   []string{"he", "llo"},
+		ProviderName: llm.ProviderGemini,
+		Chunks:       []string{"he", "llo"},
 	}
 	r := &router.Router{
 		GeminiLite:  &llm.FakeProvider{Reply: "SIMPLE"}, // 确保路由能通
@@ -58,7 +58,7 @@ func TestChatStreamHandler_OK_StreamsMetadataAndDeltas(t *testing.T) {
 	out := w.Body.String()
 
 	// 4. 验证是否发送了模型元数据 (我们之前在 Service 增加的逻辑)
-	if !strings.Contains(out, "event: delta\ndata: ::__metadata__:model:gemini:fake-v1::") {
+	if !strings.Contains(out, "event: delta\ndata: ::__metadata__:model:gemini:fake-model-v1::") {
 		t.Errorf("expected metadata event, got: %q", out)
 	}
 

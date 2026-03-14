@@ -25,9 +25,10 @@ type Store interface {
 	// Conversation 相关
 	GetConversation(ctx context.Context, id string) (*model.Conversation, error)
 	CreateConversation(ctx context.Context, conv *model.Conversation) (string, error)
-	UpdateConversationStatus(ctx context.Context, convID string, newLastMsgID string, expectedOldMsgID *string, tokenDelta int) error
+	UpdateConversationStatus(ctx context.Context, convID string, newLastMsgID string, expectedOldMsgID *string, tokenDelta int) (int, error)
 	UpdateConversationTitle(ctx context.Context, convID string, title string) error
 	ListConversationsByUserID(ctx context.Context, userID uuid.UUID) ([]*model.Conversation, error)
+	IncrementConversationTokenUsage(ctx context.Context, convID string, delta int) error
 
 	// Summary 相关
 	GetSummary(ctx context.Context, conversationID string) (string, error)

@@ -17,6 +17,8 @@ type MessageEntity struct {
 	ParentMsgID *uuid.UUID     `gorm:"index;type:uuid"` // 树状结构
 	IsPinned    bool           `gorm:"default:false"`
 	Metadata    datatypes.JSON `gorm:"type:jsonb"`
+	InputToken  int            `gorm:"default:0"`
+	OutputToken int            `gorm:"default:0"`
 	CreatedAt   time.Time
 }
 

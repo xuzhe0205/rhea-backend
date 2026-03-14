@@ -203,50 +203,57 @@ func (s *MemoryStore) GetConversation(ctx context.Context, id string) (*model.Co
 		return nil, fmt.Errorf("conversation not found: %s", id)
 	}
 
-	// 3. 将内存实体转换回 Domain 模型
-	// 这里只填充 Domain 模型关心的字段（不包含 TokenSum 和 UpdatedAt）
 	return &model.Conversation{
-		ID:        mc.ID,
-		UserID:    mc.UserID,
-		Title:     mc.Title,
-		LastMsgID: mc.LastMsgID,
-		Summary:   mc.Summary,
+		ID:               mc.ID,
+		UserID:           mc.UserID,
+		Title:            mc.Title,
+		LastMsgID:        mc.LastMsgID,
+		Summary:          mc.Summary,
+		CumulativeTokens: mc.TokenSum, // 🚀 映射回 model
 	}, nil
 }
 
 // UpdateConversationStatus 实现：包含指针更新、Token 累加和乐观锁校验
-func (s *MemoryStore) UpdateConversationStatus(ctx context.Context, convID string, newLastMsgID string, expectedOldMsgID *string, tokenDelta int) error {
+func (s *MemoryStore) UpdateConversationStatus(ctx context.Context, convID string, newLastMsgID string, expectedOldMsgID *string, tokenDelta int) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	conv, ok := s.conversations[convID]
 	if !ok {
-		return fmt.Errorf("conversation not found: %s", convID)
+		return 0, fmt.Errorf("conversation not found: %s", convID)
 	}
 
-	// 乐观锁逻辑：检查当前的 last_msg_id 是否与预期一致
+	// 乐观锁校验
 	if expectedOldMsgID != nil && *expectedOldMsgID != "" {
 		currentLastID := ""
 		if conv.LastMsgID != nil {
 			currentLastID = conv.LastMsgID.String()
 		}
 		if currentLastID != *expectedOldMsgID {
-			// 如果不匹配，模拟 Postgres 的 RowsAffected == 0 情况，返回冲突错误
-			return fmt.Errorf("conversation update conflict: last_msg_id mismatch (current: %s, expected: %s)", currentLastID, *expectedOldMsgID)
+			return 0, fmt.Errorf("concurrent_conflict") // 模拟 Postgres 冲突
 		}
+	} else if conv.LastMsgID != nil {
+		// 如果期望是 NULL 但实际不是，也算冲突
+		return 0, fmt.Errorf("concurrent_conflict")
 	}
 
-	// 执行更新
-	uNewID, err := uuid.Parse(newLastMsgID)
-	if err != nil {
-		return fmt.Errorf("invalid newLastMsgID: %v", err)
-	}
-
+	uNewID, _ := uuid.Parse(newLastMsgID)
 	conv.LastMsgID = &uNewID
-	conv.TokenSum += tokenDelta
+	conv.TokenSum += tokenDelta // 🚀 原子累加
 	conv.UpdatedAt = time.Now()
 
-	return nil
+	return conv.TokenSum, nil // 🚀 返回最新总额
+}
+
+func (s *MemoryStore) IncrementConversationTokenUsage(ctx context.Context, convID string, delta int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if conv, ok := s.conversations[convID]; ok {
+		conv.TokenSum += delta
+		conv.UpdatedAt = time.Now()
+		return nil
+	}
+	return fmt.Errorf("not found")
 }
 
 func (s *MemoryStore) GetSummary(ctx context.Context, conversationID string) (string, error) {

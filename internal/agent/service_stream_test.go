@@ -16,23 +16,33 @@ import (
 	"github.com/google/uuid"
 )
 
-func TestServiceStream_FailoverAndMetadata(t *testing.T) {
+func TestServiceStream_FailoverAndTokenAccounting(t *testing.T) {
 	// 1. 环境准备
 	uid := uuid.New()
-	ctx := auth.SetUserID(context.Background(), uid) // 使用你已有的 SetUserID
+	ctx := auth.SetUserID(context.Background(), uid)
 	st := store.NewMemoryStore()
 
-	// 2. 模拟场景：第一个 Provider 会爆炸，第二个 Provider 才是对的
+	// 2. 模拟场景：第一个 Provider 故障，第二个成功并返回 Token 消耗
+	// 🚀 对齐字段：ProviderName, Model
 	pFail := &llm.FakeProvider{
-		Provider: llm.ProviderGemini,
-		Err:      errors.New("connection reset by peer"),
-	}
-	pSuccess := &llm.FakeProvider{
-		Provider: llm.ProviderGemini,
-		Reply:    "I am the backup, and I work!",
+		ProviderName: llm.ProviderGemini,
+		Model:        "flash-v1",
+		Err:          errors.New("connection reset"),
 	}
 
-	// 构造 Router：让 Flash 先上（失败），Pro 后上（成功）
+	// 成功者带上具体的 Usage 消耗
+	pSuccess := &llm.FakeProvider{
+		ProviderName: llm.ProviderGemini,
+		Model:        "pro-v2",
+		Reply:        "I am the backup, and I work!",
+		// 🚀 模拟收据：输入 40，输出 60，总计 100
+		Usage: &llm.Usage{
+			InputTokens:  40,
+			OutputTokens: 60,
+			ModelName:    "pro-v2",
+		},
+	}
+
 	r := &router.Router{
 		GeminiLite:  &llm.FakeProvider{Reply: "SIMPLE"},
 		GeminiFlash: pFail,
@@ -51,50 +61,65 @@ func TestServiceStream_FailoverAndMetadata(t *testing.T) {
 		return nil
 	}
 
-	// 3. 执行：预期应该是成功的，因为有 Failover 机制
+	// 3. 执行
 	convID, err := svc.ChatStream(ctx, "", "Can you hear me?", emit)
 	if err != nil {
 		t.Fatalf("ChatStream failed despite failover: %v", err)
 	}
 
-	// 4. 断言：元数据是否正确
-	// 预期会 emit 两次 metadata（第一次失败的，第二次成功的）或者至少有最后一次成功的
-	foundSuccessModel := false
+	// 4. 断言元数据和内容
+	foundModelMetadata := false
 	fullResponse := ""
 	for _, p := range emittedParts {
-		if strings.Contains(p, "fake-model-v1") {
-			foundSuccessModel = true
-		} else if !strings.HasPrefix(p, "::__metadata__:") {
+		// 验证 metadata 是否包含了正确的 Provider 名称
+		if strings.Contains(p, string(llm.ProviderGemini)) {
+			foundModelMetadata = true
+		}
+		// 过滤掉 metadata 前缀，拼接实际回复
+		if !strings.HasPrefix(p, "::__metadata__:") {
 			fullResponse += p
 		}
 	}
 
-	if !foundSuccessModel {
+	if !foundModelMetadata {
 		t.Error("Metadata for the successful provider was not emitted")
 	}
 	if fullResponse != "I am the backup, and I work!" {
-		t.Errorf("Unexpected response: %s", fullResponse)
+		t.Errorf("Unexpected response content: %s", fullResponse)
 	}
 
-	// 5. 断言持久化
+	// 5. 🚀 关键断言：Token 账单原子累加是否成功
+	conv, _ := st.GetConversation(ctx, convID)
+	// 预期 CumulativeTokens 从 0 变成 100
+	if conv.CumulativeTokens != 100 {
+		t.Errorf("Token accounting failed: expected 100, got %d", conv.CumulativeTokens)
+	}
+
+	// 6. 验证消息详情持久化
 	msgs, _ := st.GetMessagesByConvID(ctx, convID, 10, "asc", "")
-	hasAssistantMsg := false
+	var assistantMsg *model.Message
 	for _, m := range msgs {
 		if m.Role == model.RoleAssistant {
-			hasAssistantMsg = true
+			assistantMsg = &m
+			break
 		}
 	}
-	if !hasAssistantMsg {
-		t.Error("Assistant message was not persisted after successful failover")
+
+	if assistantMsg == nil {
+		t.Fatal("Assistant message was not persisted")
+	}
+	// 验证单条消息级别的 Token 记录
+	if assistantMsg.InputTokens != 40 || assistantMsg.OutputTokens != 60 {
+		t.Errorf("Message-level tokens error: got %d/%d, expected 40/60", assistantMsg.InputTokens, assistantMsg.OutputTokens)
 	}
 }
 
 func TestServiceStream_UserMessagePersistence(t *testing.T) {
-	// 这个用例专门测试即便全部报错，用户的提问也要存下来
 	uid := uuid.New()
 	ctx := auth.SetUserID(context.Background(), uid)
 	st := store.NewMemoryStore()
 
+	// 全部失败的情况
 	pFatal := &llm.FakeProvider{Err: errors.New("total blackout")}
 	r := &router.Router{
 		GeminiLite:  &llm.FakeProvider{Reply: "DEEP"},
@@ -113,9 +138,15 @@ func TestServiceStream_UserMessagePersistence(t *testing.T) {
 		t.Fatal("Expected error, got nil")
 	}
 
-	// 即使失败，消息列表里应该有且只有那条 User 消息
+	// 即使全挂了，用户消息也必须持久化（防止丢上下文）
 	msgs, _ := st.GetMessagesByConvID(ctx, convID, 10, "asc", "")
 	if len(msgs) == 0 || msgs[0].Role != model.RoleUser {
 		t.Error("User message should be persisted even if AI fails")
+	}
+
+	// 失败时，不产生 Token 费用
+	conv, _ := st.GetConversation(ctx, convID)
+	if conv.CumulativeTokens != 0 {
+		t.Errorf("Tokens should be 0 on total failure, got %d", conv.CumulativeTokens)
 	}
 }

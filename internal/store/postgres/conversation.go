@@ -8,6 +8,7 @@ import (
 	"rhea-backend/internal/model"
 
 	"github.com/google/uuid"
+	"gorm.io/gorm"
 )
 
 func (s *PostgresStore) CreateConversation(ctx context.Context, conv *model.Conversation) (string, error) {
@@ -37,11 +38,12 @@ func (s *PostgresStore) GetConversation(ctx context.Context, id string) (*model.
 	}
 
 	return &model.Conversation{
-		ID:        entity.ID,
-		Title:     entity.Title,
-		LastMsgID: entity.LastMsgID,
-		Summary:   entity.Summary,
-		UserID:    entity.UserID,
+		ID:               entity.ID,
+		Title:            entity.Title,
+		LastMsgID:        entity.LastMsgID,
+		Summary:          entity.Summary,
+		UserID:           entity.UserID,
+		CumulativeTokens: entity.TokenSum,
 	}, nil
 }
 
@@ -71,31 +73,27 @@ func (s *PostgresStore) ListConversationsByUserID(ctx context.Context, userID uu
 	return results, nil
 }
 
-func (s *PostgresStore) UpdateConversationStatus(ctx context.Context, convID string, newLastMsgID string, expectedOldMsgID *string, tokenDelta int) error {
+func (s *PostgresStore) UpdateConversationStatus(ctx context.Context, convID string, newLastMsgID string, _ *string, tokenDelta int) (int, error) {
 	uNewID, _ := uuid.Parse(newLastMsgID)
 	uConvID, _ := uuid.Parse(convID)
+	var updatedTokens int
 
-	db := s.db.WithContext(ctx).Table("conversation_entities").Where("id = ?", uConvID)
+	// 直接执行更新，不再校验旧的 last_msg_id
+	err := s.db.WithContext(ctx).Table("conversation_entities").
+		Where("id = ?", uConvID).
+		Select("token_sum").
+		Updates(map[string]interface{}{
+			"last_msg_id": uNewID,
+			"token_sum":   gorm.Expr("token_sum + ?", tokenDelta),
+			"updated_at":  time.Now(),
+		}).
+		Scan(&updatedTokens).Error
 
-	if expectedOldMsgID != nil && *expectedOldMsgID != "" {
-		uOldID, _ := uuid.Parse(*expectedOldMsgID)
-		db = db.Where("last_msg_id = ?", uOldID)
-	} else {
-		db = db.Where("last_msg_id IS NULL")
+	if err != nil {
+		return 0, err
 	}
 
-	result := db.Updates(map[string]interface{}{
-		"last_msg_id": uNewID,
-		"updated_at":  time.Now(),
-	})
-
-	if result.Error != nil {
-		return result.Error
-	}
-	if result.RowsAffected == 0 {
-		return fmt.Errorf("no rows updated (conflict or not found)")
-	}
-	return nil
+	return updatedTokens, nil
 }
 
 func (s *PostgresStore) UpdateConversationTitle(ctx context.Context, convID string, title string) error {
@@ -126,4 +124,11 @@ func (s *PostgresStore) GetSummary(ctx context.Context, conversationID string) (
 		Where("id = ?", conversationID).
 		Scan(&summary).Error
 	return summary, err
+}
+
+func (s *PostgresStore) IncrementConversationTokenUsage(ctx context.Context, convID string, delta int) error {
+	uID, _ := uuid.Parse(convID)
+	return s.db.WithContext(ctx).Model(&model.ConversationEntity{}).
+		Where("id = ?", uID).
+		Update("token_sum", gorm.Expr("token_sum + ?", delta)).Error
 }

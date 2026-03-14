@@ -22,8 +22,9 @@ func TestService_Chat_PersistsMessagesAndReturnsReply(t *testing.T) {
 	st := store.NewMemoryStore()
 	convID := uuid.New().String()
 
-	// 2. 预设对话和历史记录 (MemoryStore 需要先有这个对话，否则 GetConversation 会报错)
+	// 2. 预设对话
 	_, _ = st.CreateConversation(ctx, &model.Conversation{ID: uuid.MustParse(convID), UserID: uid})
+	// 注意：AppendMessage 签名如果改了，这里也要带上最后的 nil 或 0
 	_, _ = st.AppendMessage(ctx, convID, nil, model.Message{Role: model.RoleUser, Content: "old"}, nil)
 
 	b := &ctxbuilder.Builder{
@@ -32,10 +33,15 @@ func TestService_Chat_PersistsMessagesAndReturnsReply(t *testing.T) {
 		RecentMaxMsgs: 10,
 	}
 
-	// 3. 构造符合新 Router 结构的 Mock
-	fpPro := &llm.FakeProvider{Provider: llm.ProviderGemini, Reply: "assistant says hi"}
+	// 3. 构造符合新 Provider 接口的 Mock
+	// 此时 FakeProvider.Chat 会返回 ChatResponse 结构体
+	fpPro := &llm.FakeProvider{
+		ProviderName: llm.ProviderGemini,
+		Reply:        "assistant says hi",
+	}
+
 	r := &router.Router{
-		GeminiLite:  &llm.FakeProvider{Reply: "DEEP"}, // 路由选择逻辑
+		GeminiLite:  &llm.FakeProvider{Reply: "DEEP"}, // 路由意图识别
 		GeminiPro:   fpPro,
 		GeminiFlash: &llm.FakeProvider{Reply: "flash reply"},
 	}
@@ -51,6 +57,8 @@ func TestService_Chat_PersistsMessagesAndReturnsReply(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Chat error: %v", err)
 	}
+
+	// 5. 验证回复
 	if reply != "assistant says hi" {
 		t.Fatalf("expected reply %q, got %q", "assistant says hi", reply)
 	}
@@ -58,16 +66,23 @@ func TestService_Chat_PersistsMessagesAndReturnsReply(t *testing.T) {
 		t.Errorf("expected convID %s, got %s", convID, returnedConvID)
 	}
 
-	// 5. 验证 Store 状态 (由于 st.AppendMessage 逻辑，预期有 3 条：old, user, assistant)
+	// 6. 验证 Store 状态
 	got, err := st.GetMessagesByConvID(ctx, convID, 10, "asc", "")
 	if err != nil {
 		t.Fatalf("GetMessages error: %v", err)
 	}
 
-	// 检查最后一条是否是 AI 回复
+	// 验证最后一条消息的 Role 和内容
 	lastMsg := got[len(got)-1]
 	if lastMsg.Role != model.RoleAssistant || lastMsg.Content != "assistant says hi" {
 		t.Errorf("Last message persistent error, got: %+v", lastMsg)
+	}
+
+	// 🚀 新增验证：验证 Token 统计是否生效
+	conv, _ := st.GetConversation(ctx, convID)
+	// 因为 FakeProvider 默认会 mock 一些 token (比如 10+5)
+	if conv.CumulativeTokens <= 0 {
+		t.Errorf("CumulativeTokens should be greater than 0, got %d", conv.CumulativeTokens)
 	}
 }
 
@@ -76,7 +91,6 @@ func TestService_Chat_NoProvider(t *testing.T) {
 	ctx := auth.SetUserID(context.Background(), uid)
 	st := store.NewMemoryStore()
 
-	// 预设对话
 	convID := uuid.New().String()
 	_, _ = st.CreateConversation(ctx, &model.Conversation{ID: uuid.MustParse(convID), UserID: uid})
 
@@ -101,11 +115,11 @@ func TestService_Chat_NoProvider(t *testing.T) {
 	}
 }
 
-// 🚀 针对新的 ChooseChain 逻辑进行测试
 func TestRouter_ChooseChain_NewLogic(t *testing.T) {
-	pPro := &llm.FakeProvider{Provider: llm.ProviderGemini}
-	pFlash := &llm.FakeProvider{Provider: llm.ProviderGemini}
-	pLite := &llm.FakeProvider{Provider: llm.ProviderGemini}
+	// 为测试准备 mock 数据
+	pPro := &llm.FakeProvider{ProviderName: llm.ProviderGemini, Reply: "pro"}
+	pFlash := &llm.FakeProvider{ProviderName: llm.ProviderGemini, Reply: "flash"}
+	pLite := &llm.FakeProvider{ProviderName: llm.ProviderGemini, Reply: "SIMPLE"} // 返回简单意图
 
 	r := &router.Router{
 		GeminiPro:   pPro,
@@ -113,12 +127,17 @@ func TestRouter_ChooseChain_NewLogic(t *testing.T) {
 		GeminiLite:  pLite,
 	}
 
-	// 在你的 router.go 实现中，ChooseChain 应该返回具体的优先级
-	// 这里我们简单测试它是否返回了非空的链条
 	ctx := context.Background()
-	got := r.ChooseChain(ctx, "hello")
 
-	if len(got) == 0 {
-		t.Fatal("expected a non-empty provider chain")
+	// 测试包含代码块的强特征拦截
+	gotCoding := r.ChooseChain(ctx, "Check this code: ```go ... ```")
+	if len(gotCoding) == 0 || gotCoding[0] != pPro {
+		t.Errorf("Expected Pro to be first for coding heuristic")
+	}
+
+	// 测试普通文本（经由 Lite 分类）
+	gotSimple := r.ChooseChain(ctx, "Hello")
+	if len(gotSimple) == 0 || gotSimple[0] != pFlash {
+		t.Errorf("Expected Flash to be first for SIMPLE intent")
 	}
 }

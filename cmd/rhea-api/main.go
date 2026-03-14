@@ -120,6 +120,7 @@ func main() {
 
 	s.Handle("GET /v1/conversations", protectedChain(http.HandlerFunc(chatHandler.ListConversations)))
 	s.Handle("GET /v1/conversations/{id}/messages", protectedChain(http.HandlerFunc(chatHandler.ListConversationMessages)))
+	s.Handle("GET /v1/conversations/{id}/token-sum", protectedChain(http.HandlerFunc(chatHandler.GetConversationTokenSum)))
 
 	handlerWithCORS := middleware.CORS(s.Handler())
 

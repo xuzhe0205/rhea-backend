@@ -111,8 +111,8 @@ func (b *Builder) Build(ctx context.Context, conversationID string, userMsg stri
 		}
 		fmt.Printf("  [%d] Role: %-10s | ID: %s | Content: %s\n", i, m.Role, shortID, truncate(m.Content, 80))
 	}
-	fmt.Println("--- [Builder] End of Build ---\n")
-	fmt.Printf("[DEBUG] msgs: %s\n", msgs)
+	fmt.Println("...")
+	fmt.Printf("msgs: %+v\n", msgs)
 	return msgs, nil
 }
 

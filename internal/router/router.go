@@ -62,13 +62,20 @@ func (r *Router) classifyIntent(ctx context.Context, text string) string {
 	}
 
 	// 使用非流式调用，只拿一个词
-	res, err := r.GeminiLite.Chat(ctx, msgs)
+	resp, err := r.GeminiLite.Chat(ctx, msgs)
 	if err != nil {
 		return IntentDeep // 出错保底用 Pro
 	}
 
-	res = strings.TrimSpace(strings.ToUpper(res))
-	if strings.Contains(res, IntentSimple) {
+	// 🚀 关键步骤：在这里你可以打印或记录这个分类动作花掉的 Token
+	// 以后我们可以把这个 resp.Usage 传给一个专门的异步方法存入数据库
+	fmt.Printf("[Router] Classification Usage - Model: %s, In: %d, Out: %d\n",
+		resp.Usage.ModelName, resp.Usage.InputTokens, resp.Usage.OutputTokens)
+
+	// 2. 从结构体中提取文本内容进行处理
+	content := strings.TrimSpace(strings.ToUpper(resp.Content))
+
+	if strings.Contains(content, IntentSimple) {
 		return IntentSimple
 	}
 	return IntentDeep

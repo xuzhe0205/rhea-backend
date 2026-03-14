@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"rhea-backend/internal/llm"
 	"rhea-backend/internal/model"
 
 	"github.com/google/uuid"
@@ -97,68 +98,84 @@ func (s *Service) ChatStream(
 	}
 
 	var lastErr error
+	var sb strings.Builder
+	var finalUsage *llm.Usage // 🚀 新增：用于捕获流结束时的 Token 统计
 
 	hasPickedProvider := false
-	var sb strings.Builder
 	for _, p := range providerPriorityChain {
 		if p == nil {
 			continue
 		}
 		hasPickedProvider = true
-		// 🚀 关键：每次尝试新的 Provider 前，重置 Builder
 		sb.Reset()
-		// 🚀 核心改动：在发送正式内容前，先 emit 一个标识包
-		// 使用特殊的识别前缀，方便前端拦截
+		finalUsage = nil // 重置统计
+
 		modelInfo := fmt.Sprintf("::__metadata__:model:%s:%s::", p.Name(), p.ModelName())
 		_ = emit(modelInfo)
-		// 7) Stream from provider, while accumulating final reply for persistence
-		lastErr = p.Stream(ctx, msgs, func(delta string) error {
-			sb.WriteString(delta)
-			return emit(delta)
+
+		// 7) Stream 核心改动：适配新的 emit 签名 (delta, usage)
+		lastErr = p.Stream(ctx, msgs, func(delta string, usage *llm.Usage) error {
+			if usage != nil {
+				finalUsage = usage // 🚀 捕获到了最后的账单
+			}
+			if delta != "" {
+				sb.WriteString(delta)
+				return emit(delta)
+			}
+			return nil
 		})
+
 		if lastErr == nil {
 			break
 		}
-		// 💡 进阶逻辑判断：
-		// 如果 sb.Len() > 0，说明已经有部分内容发给前端了。
-		// 这种情况下，切换到下一个 Provider 会导致前端内容重复。
-		// 建议：此时直接返回错误，不再重试。
 		if sb.Len() > 0 {
-			log.Printf("[ChatStream] Stream interrupted mid-way for provider %s: %v", p.Name(), lastErr)
 			return conversationID, lastErr
 		}
-
-		log.Printf("[ChatStream] AI reply failed to start: %v. Trying next agent: %v", lastErr, p.Name())
 	}
+
 	if !hasPickedProvider {
 		return "", ErrNoProvider
 	}
 	if lastErr != nil {
-		log.Printf("[ChatStream] Provider stream error: %v | ConvID: %s", lastErr, conversationID)
 		return conversationID, lastErr
 	}
 
-	// 7.5
-	// 🚀 优化：创建一个“不会随请求断开而取消”的 Context 用于持久化
-	// 这样即便用户在 AI 说话时关掉浏览器，我们也能把已生成的内容存好
+	// 7.5 持久化 Context
 	persistCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// 8) 【关键】流成功结束后，存储全量 AI 回复
+	// 8) 存储 AI 回复 (带上 Token 消耗)
 	fullReply := sb.String()
+	inputT, outputT := 0, 0
+	if finalUsage != nil {
+		inputT = finalUsage.InputTokens
+		outputT = finalUsage.OutputTokens
+	}
+
 	aiMsgID, err := s.Store.AppendMessage(persistCtx, conversationID, &newUserMsgID, model.Message{
-		Role:    model.RoleAssistant,
-		Content: fullReply,
+		Role:         model.RoleAssistant,
+		Content:      fullReply,
+		InputTokens:  inputT,  // 🚀 存入消息表
+		OutputTokens: outputT, // 🚀 存入消息表
 	}, nil)
 	if err != nil {
 		log.Printf("[ChatStream] Error saving AI message: %v", err)
 		return conversationID, err
 	}
 
-	// 9) 【关键】更新 Conversation 指针 (从 parentID 更新到 aiMsgID)
-	if err := s.Store.UpdateConversationStatus(persistCtx, conversationID, aiMsgID, parentID, 0); err != nil {
-		log.Printf("[ChatStream] Error updating pointer: %v", err)
-		return conversationID, err // 同样报错，因为这会导致后续对话逻辑错误
+	// 9) 【核心原子更新】更新 Conversation 指针 + 累加 Token
+	totalDelta := inputT + outputT
+	// 注意：这里调用的是你刚才重构的返回 int 的 UpdateConversationStatus
+	updatedTotal, err := s.Store.UpdateConversationStatus(persistCtx, conversationID, aiMsgID, parentID, totalDelta)
+	if err != nil {
+		log.Printf("[ChatStream] Error updating pointer and tokens: %v", err)
+		return conversationID, err
+	}
+
+	// 10) 阈值检查 (100万 Token 预警)
+	if updatedTotal > 1000000 {
+		log.Printf("⚠️ [Quota] Conv %s has reached %d tokens!", conversationID, updatedTotal)
+		// 这里的逻辑可以根据你的业务需求扩展，比如发一个特殊的 emit 给前端
 	}
 
 	return conversationID, nil
