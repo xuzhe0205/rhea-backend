@@ -1,0 +1,19 @@
+name: Keep Rhea Awake
+
+on:
+  schedule:
+    - cron: "*/10 * * * *" # 每 10 分钟运行一次 (GitHub Action 的定时可能有几分钟延迟)
+  workflow_dispatch: # 允许你在 GitHub 页面上点击按钮手动触发，方便测试
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping RHEA Backend hosted in Render
+        run: |
+          URL="https://rhea-backend.onrender.com/health"
+          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" $URL)
+          echo "Pinged $URL - Response Code: $RESPONSE"
+          if [ "$RESPONSE" -ne 200 ]; then
+            echo "Warning: Service might be down or waking up."
+          fi
