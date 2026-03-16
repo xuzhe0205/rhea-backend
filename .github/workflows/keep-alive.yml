@@ -2,7 +2,7 @@ name: Keep Rhea Awake
 
 on:
   schedule:
-    - cron: "*/10 * * * *" # 每 10 分钟运行一次 (GitHub Action 的定时可能有几分钟延迟)
+    - cron: "*/5 * * * *" # 每 5 分钟运行一次 (GitHub Action 的定时可能有几分钟延迟)
   workflow_dispatch: # 允许你在 GitHub 页面上点击按钮手动触发，方便测试
 
 jobs:
