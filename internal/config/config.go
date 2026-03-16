@@ -8,11 +8,12 @@ import (
 )
 
 type Config struct {
-	GeminiAPIKey string
-	ModelPro     string
-	ModelFlash   string
-	ModelLite    string
-	DBDSN        string
+	GeminiAPIKey     string
+	GeminiAPIKeyFree string
+	ModelPro         string
+	ModelFlash       string
+	ModelLite        string
+	DBDSN            string
 }
 
 func Load() (*Config, error) {
@@ -45,7 +46,8 @@ func Load() (*Config, error) {
 	}
 
 	cfg := &Config{
-		GeminiAPIKey: os.Getenv("GEMINI_API_KEY"),
+		GeminiAPIKey:     os.Getenv("GEMINI_API_KEY"),
+		GeminiAPIKeyFree: os.Getenv("GEMINI_API_KEY_FREE"),
 		// 从环境变量读取，如果没有则赋予默认值
 		ModelPro:   getenvDefault("GEMINI_MODEL_PRO", "gemini-2.5-pro"),
 		ModelFlash: getenvDefault("GEMINI_MODEL_FLASH", "gemini-3-flash-preview"),
@@ -53,8 +55,8 @@ func Load() (*Config, error) {
 		DBDSN:      dbDSN,
 	}
 
-	if cfg.GeminiAPIKey == "" {
-		return nil, fmt.Errorf("GEMINI_API_KEY is required")
+	if cfg.GeminiAPIKey == "" || cfg.GeminiAPIKeyFree == "" {
+		return nil, fmt.Errorf("GEMINI_API_KEY and GeminiAPIKeyFree are required")
 	}
 
 	return cfg, nil

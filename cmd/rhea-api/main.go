@@ -70,6 +70,12 @@ func main() {
 		log.Fatalf("Failed to init Gemini Flash: %v", err)
 	}
 
+	// 2.5 Flash: 默认优先选择Free Tier的API
+	pFlashFree, err := llm.NewGeminiProvider(ctx, cfg.GeminiAPIKeyFree, cfg.ModelFlash, 0.7)
+	if err != nil {
+		log.Fatalf("Failed to init Gemini Flash: %v", err)
+	}
+
 	// 3. Lite: 极速分类器 (只需 0.1 温度确保分类结果稳定)
 	pLite, err := llm.NewGeminiProvider(ctx, cfg.GeminiAPIKey, cfg.ModelLite, 0.1)
 	if err != nil {
@@ -78,9 +84,10 @@ func main() {
 
 	// 装配智能路由器
 	r := &router.Router{
-		GeminiPro:   pPro,
-		GeminiFlash: pFlash,
-		GeminiLite:  pLite,
+		GeminiPro:       pPro,
+		GeminiFlash:     pFlash,
+		GeminiFlashFree: pFlashFree,
+		GeminiLite:      pLite,
 	}
 
 	// --- 🚀 初始化核心 Service ---

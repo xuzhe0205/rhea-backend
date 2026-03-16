@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"rhea-backend/internal/auth"
@@ -24,7 +25,6 @@ func TestService_Chat_PersistsMessagesAndReturnsReply(t *testing.T) {
 
 	// 2. 预设对话
 	_, _ = st.CreateConversation(ctx, &model.Conversation{ID: uuid.MustParse(convID), UserID: uid})
-	// 注意：AppendMessage 签名如果改了，这里也要带上最后的 nil 或 0
 	_, _ = st.AppendMessage(ctx, convID, nil, model.Message{Role: model.RoleUser, Content: "old"}, nil)
 
 	b := &ctxbuilder.Builder{
@@ -33,17 +33,16 @@ func TestService_Chat_PersistsMessagesAndReturnsReply(t *testing.T) {
 		RecentMaxMsgs: 10,
 	}
 
-	// 3. 构造符合新 Provider 接口的 Mock
-	// 此时 FakeProvider.Chat 会返回 ChatResponse 结构体
-	fpPro := &llm.FakeProvider{
-		ProviderName: llm.ProviderGemini,
-		Reply:        "assistant says hi",
-	}
+	// 3. 构造符合新架构的 Mock
+	fpPro := &llm.FakeProvider{Model: "gemini-pro", Reply: "assistant says hi"}
+	fpFree := &llm.FakeProvider{Model: "flash-free", Reply: "flash free reply"}
+	fpPaid := &llm.FakeProvider{Model: "flash-paid", Reply: "flash paid reply"}
 
 	r := &router.Router{
-		GeminiLite:  &llm.FakeProvider{Reply: "DEEP"}, // 路由意图识别
-		GeminiPro:   fpPro,
-		GeminiFlash: &llm.FakeProvider{Reply: "flash reply"},
+		GeminiLite:      &llm.FakeProvider{Reply: "DEEP"}, // 模拟深度意图
+		GeminiPro:       fpPro,
+		GeminiFlashFree: fpFree,
+		GeminiFlash:     fpPaid,
 	}
 
 	svc := &Service{
@@ -52,7 +51,7 @@ func TestService_Chat_PersistsMessagesAndReturnsReply(t *testing.T) {
 		Router:  r,
 	}
 
-	// 4. 执行
+	// 4. 执行 (DEEP 意图应返回 Pro 的回复)
 	reply, returnedConvID, err := svc.Chat(ctx, convID, "How to write Go?")
 	if err != nil {
 		t.Fatalf("Chat error: %v", err)
@@ -60,47 +59,45 @@ func TestService_Chat_PersistsMessagesAndReturnsReply(t *testing.T) {
 
 	// 5. 验证回复
 	if reply != "assistant says hi" {
-		t.Fatalf("expected reply %q, got %q", "assistant says hi", reply)
+		t.Fatalf("expected reply from Pro %q, got %q", "assistant says hi", reply)
 	}
 	if returnedConvID != convID {
 		t.Errorf("expected convID %s, got %s", convID, returnedConvID)
 	}
 
 	// 6. 验证 Store 状态
-	got, err := st.GetMessagesByConvID(ctx, convID, 10, "asc", "")
-	if err != nil {
-		t.Fatalf("GetMessages error: %v", err)
-	}
-
-	// 验证最后一条消息的 Role 和内容
+	got, _ := st.GetMessagesByConvID(ctx, convID, 10, "asc", "")
 	lastMsg := got[len(got)-1]
 	if lastMsg.Role != model.RoleAssistant || lastMsg.Content != "assistant says hi" {
 		t.Errorf("Last message persistent error, got: %+v", lastMsg)
 	}
 
-	// 🚀 新增验证：验证 Token 统计是否生效
+	// 验证 Token 统计
 	conv, _ := st.GetConversation(ctx, convID)
-	// 因为 FakeProvider 默认会 mock 一些 token (比如 10+5)
 	if conv.CumulativeTokens <= 0 {
 		t.Errorf("CumulativeTokens should be greater than 0, got %d", conv.CumulativeTokens)
 	}
 }
 
-func TestService_Chat_NoProvider(t *testing.T) {
+func TestService_Chat_Failover_FreeToPaid(t *testing.T) {
+	// 🚀 核心测试：验证 Free Tier 挂了能不能自动切到 Paid
 	uid := uuid.New()
 	ctx := auth.SetUserID(context.Background(), uid)
 	st := store.NewMemoryStore()
-
 	convID := uuid.New().String()
 	_, _ = st.CreateConversation(ctx, &model.Conversation{ID: uuid.MustParse(convID), UserID: uid})
 
 	b := &ctxbuilder.Builder{Store: st, SystemPrompt: "You are Rhea."}
 
-	// 所有 Provider 都是 nil
+	// 模拟 Free 报错，Paid 正常
+	pFree := &llm.FakeProvider{Model: "flash-free", Err: fmt.Errorf("429 resource exhausted")}
+	pPaid := &llm.FakeProvider{Model: "flash-paid", Reply: "recovered by paid tier"}
+
 	r := &router.Router{
-		GeminiPro:   nil,
-		GeminiFlash: nil,
-		GeminiLite:  nil,
+		GeminiLite:      &llm.FakeProvider{Reply: "SIMPLE"},
+		GeminiFlashFree: pFree,
+		GeminiFlash:     pPaid,
+		GeminiPro:       &llm.FakeProvider{Model: "pro"},
 	}
 
 	svc := &Service{
@@ -108,6 +105,35 @@ func TestService_Chat_NoProvider(t *testing.T) {
 		Builder: b,
 		Router:  r,
 	}
+
+	// 执行：SIMPLE 意图会先尝试 Free，失败后应尝试 Paid
+	reply, _, err := svc.Chat(ctx, convID, "Simple task")
+	if err != nil {
+		t.Fatalf("Expected failover success, got error: %v", err)
+	}
+
+	if reply != "recovered by paid tier" {
+		t.Errorf("Failover logic failed, got reply: %q", reply)
+	}
+}
+
+func TestService_Chat_NoProvider(t *testing.T) {
+	uid := uuid.New()
+	ctx := auth.SetUserID(context.Background(), uid)
+	st := store.NewMemoryStore()
+	convID := uuid.New().String()
+	_, _ = st.CreateConversation(ctx, &model.Conversation{ID: uuid.MustParse(convID), UserID: uid})
+
+	b := &ctxbuilder.Builder{Store: st, SystemPrompt: "You are Rhea."}
+
+	r := &router.Router{
+		GeminiPro:       nil,
+		GeminiFlash:     nil,
+		GeminiFlashFree: nil,
+		GeminiLite:      nil,
+	}
+
+	svc := &Service{Store: st, Builder: b, Router: r}
 
 	_, _, err := svc.Chat(ctx, convID, "Tell me something")
 	if err != ErrNoProvider {
@@ -116,28 +142,32 @@ func TestService_Chat_NoProvider(t *testing.T) {
 }
 
 func TestRouter_ChooseChain_NewLogic(t *testing.T) {
-	// 为测试准备 mock 数据
-	pPro := &llm.FakeProvider{ProviderName: llm.ProviderGemini, Reply: "pro"}
-	pFlash := &llm.FakeProvider{ProviderName: llm.ProviderGemini, Reply: "flash"}
-	pLite := &llm.FakeProvider{ProviderName: llm.ProviderGemini, Reply: "SIMPLE"} // 返回简单意图
+	pPro := &llm.FakeProvider{Model: "gemini-pro"}
+	pFlashFree := &llm.FakeProvider{Model: "flash-free"}
+	pFlashPaid := &llm.FakeProvider{Model: "flash-paid"}
+	pLite := &llm.FakeProvider{Reply: "SIMPLE"}
 
 	r := &router.Router{
-		GeminiPro:   pPro,
-		GeminiFlash: pFlash,
-		GeminiLite:  pLite,
+		GeminiPro:       pPro,
+		GeminiFlashFree: pFlashFree,
+		GeminiFlash:     pFlashPaid,
+		GeminiLite:      pLite,
 	}
 
 	ctx := context.Background()
 
-	// 测试包含代码块的强特征拦截
-	gotCoding := r.ChooseChain(ctx, "Check this code: ```go ... ```")
-	if len(gotCoding) == 0 || gotCoding[0] != pPro {
-		t.Errorf("Expected Pro to be first for coding heuristic")
+	// 1. 测试代码块拦截 (Pro -> Free -> Paid)
+	gotCoding := r.ChooseChain(ctx, "Check: ```go ... ```")
+	if len(gotCoding) == 0 || gotCoding[0].ModelName() != "gemini-pro" {
+		t.Errorf("Expected Pro first for coding")
 	}
 
-	// 测试普通文本（经由 Lite 分类）
+	// 2. 测试简单意图 (Free -> Paid -> Pro)
 	gotSimple := r.ChooseChain(ctx, "Hello")
-	if len(gotSimple) == 0 || gotSimple[0] != pFlash {
-		t.Errorf("Expected Flash to be first for SIMPLE intent")
+	if len(gotSimple) < 2 || gotSimple[0].ModelName() != "flash-free" {
+		t.Errorf("Expected FlashFree first for simple intent")
+	}
+	if gotSimple[1].ModelName() != "flash-paid" {
+		t.Errorf("Expected FlashPaid to be the second choice (backup)")
 	}
 }

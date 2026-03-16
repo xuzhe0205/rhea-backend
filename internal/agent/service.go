@@ -87,7 +87,7 @@ func (s *Service) Chat(ctx context.Context, conversationID string, userText stri
 	// 4) Build context (includes the new user message)
 	// 构建上下文
 	// 此时 GetRecentMessages(conversationID) 理论上能查到刚才存的那条 userMsg 了
-	msgs, err := s.Builder.Build(ctx, conversationID, userText)
+	msgs, err := s.Builder.Build(ctx, conversationID, "")
 	if err != nil {
 		return "", "", err
 	}

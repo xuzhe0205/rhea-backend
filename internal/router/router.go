@@ -9,9 +9,10 @@ import (
 )
 
 type Router struct {
-	GeminiPro   llm.Provider // 2.5 Pro (深度学习/重构)
-	GeminiFlash llm.Provider // 3.0 Flash (日常问答)
-	GeminiLite  llm.Provider // 3.1 Flash-Lite (极速分类)
+	GeminiPro       llm.Provider // 2.5 Pro (深度学习/重构)
+	GeminiFlash     llm.Provider // 3.0 Flash (日常问答)
+	GeminiFlashFree llm.Provider // 3.0 Flash Free Tier
+	GeminiLite      llm.Provider // 3.1 Flash-Lite (极速分类)
 }
 
 const (
@@ -35,7 +36,7 @@ Output ONLY 'SIMPLE' or 'DEEP'.`
 func (r *Router) ChooseChain(ctx context.Context, userText string) []llm.Provider {
 	// 1. 强特征抢跑：如果有明显的代码块，直接上 Pro，省去一次意图检查
 	if strings.Contains(userText, "```") || strings.Contains(userText, "func ") {
-		return []llm.Provider{r.GeminiPro, r.GeminiFlash}
+		return []llm.Provider{r.GeminiPro, r.GeminiFlashFree, r.GeminiFlash}
 	}
 
 	// 2. 调用极速分类器 (Lite)
@@ -44,11 +45,11 @@ func (r *Router) ChooseChain(ctx context.Context, userText string) []llm.Provide
 
 	if intent == IntentSimple {
 		// 简单问题：Flash 优先，Pro 保底
-		return []llm.Provider{r.GeminiFlash, r.GeminiPro}
+		return []llm.Provider{r.GeminiFlashFree, r.GeminiFlash, r.GeminiPro}
 	}
 
 	// 深度问题：Pro 优先，Flash 保底
-	return []llm.Provider{r.GeminiPro, r.GeminiFlash}
+	return []llm.Provider{r.GeminiPro, r.GeminiFlashFree, r.GeminiFlash}
 }
 
 func (r *Router) classifyIntent(ctx context.Context, text string) string {

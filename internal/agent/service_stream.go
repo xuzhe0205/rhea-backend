@@ -10,6 +10,7 @@ import (
 
 	"rhea-backend/internal/llm"
 	"rhea-backend/internal/model"
+	"rhea-backend/internal/pkg/netutil"
 
 	"github.com/google/uuid"
 )
@@ -116,7 +117,7 @@ func (s *Service) ChatStream(
 		// 7) Stream 核心改动：适配新的 emit 签名 (delta, usage)
 		lastErr = p.Stream(ctx, msgs, func(delta string, usage *llm.Usage) error {
 			if usage != nil {
-				finalUsage = usage // 🚀 捕获到了最后的账单
+				finalUsage = usage
 			}
 			if delta != "" {
 				sb.WriteString(delta)
@@ -125,12 +126,25 @@ func (s *Service) ChatStream(
 			return nil
 		})
 
-		if lastErr == nil {
-			break
-		}
-		if sb.Len() > 0 {
+		// ✨ 关键改动：判断是否需要重试
+		if lastErr != nil {
+			// 如果已经输出了内容，绝对不能重试，否则前端会看到重复且混乱的内容
+			if sb.Len() > 0 {
+				return conversationID, lastErr
+			}
+
+			// 判断错误是否值得重试 (429, 503 等)
+			if netutil.IsRateLimitError(lastErr) || strings.Contains(lastErr.Error(), "503") {
+				log.Printf("[Router] Provider %s (%s) throttled. Error: %v. Trying next...", p.Name(), p.ModelName(), lastErr)
+				continue // 👈 跳到下一个 Provider
+			}
+
+			// 如果是其他致命错误 (比如 API Key 错写了)，直接终止
 			return conversationID, lastErr
 		}
+
+		// 如果成功跑完（lastErr == nil），直接退出循环
+		break
 	}
 
 	if !hasPickedProvider {
