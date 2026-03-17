@@ -111,6 +111,7 @@ func main() {
 
 	// 身份验证
 	s.Handle("POST /v1/login", http.HandlerFunc(authHandler.Login))
+	s.Handle("POST /v1/register", http.HandlerFunc(authHandler.Register))
 
 	protectedChain := middleware.CreateChain(
 		middleware.AuthMiddleware,
