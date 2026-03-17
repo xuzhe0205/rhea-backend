@@ -48,7 +48,7 @@ func ValidateCredentials(email, password string) error {
 	}
 
 	if !hasUpper {
-		return errors.New("password must contain at nil least one uppercase letter")
+		return errors.New("password must contain at least one uppercase letter")
 	}
 	if !hasLower {
 		return errors.New("password must contain at least one lowercase letter")
