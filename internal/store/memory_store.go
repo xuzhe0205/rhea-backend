@@ -37,20 +37,25 @@ type memoryConv struct {
 	UpdatedAt time.Time
 }
 
+// 1. 在 MemoryStore 结构体中增加 annotations map
 type MemoryStore struct {
 	mu            sync.RWMutex
-	messages      map[string][]memoryMsg // convID -> messages
+	messages      map[string][]memoryMsg
 	conversations map[string]*memoryConv
 	summary       map[string]string
 	users         map[string]*model.User
+	// 新增：key 为 annotation 的 ID 字符串
+	annotations map[string]*model.Annotation
 }
 
+// 2. 在 NewMemoryStore 中初始化 map
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
 		messages:      make(map[string][]memoryMsg),
 		conversations: make(map[string]*memoryConv),
 		summary:       make(map[string]string),
-		users:         make(map[string]*model.User), // 👈 初始化
+		users:         make(map[string]*model.User),
+		annotations:   make(map[string]*model.Annotation), // 👈 初始化
 	}
 }
 
@@ -377,6 +382,100 @@ func (s *MemoryStore) ListConversationsByUserID(ctx context.Context, userID uuid
 	}
 
 	return finalResult, nil
+}
+
+// --- 实现 Annotation (Rich Text) 接口 ---
+
+// SaveAnnotation 实现存储逻辑
+func (s *MemoryStore) SaveAnnotation(ctx context.Context, ann *model.Annotation) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if ann.ID == uuid.Nil {
+		ann.ID = uuid.New()
+	}
+
+	// 存储一份克隆，模拟数据库的持久化行为，防止外部指针修改
+	annCopy := *ann
+	s.annotations[ann.ID.String()] = &annCopy
+	return nil
+}
+
+// GetAnnotationByFeature 模拟精确特征查找
+func (s *MemoryStore) GetAnnotationByFeature(ctx context.Context, msgID uuid.UUID, start, end int, annType model.AnnotationType) (*model.Annotation, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for _, a := range s.annotations {
+		if a.MessageID == msgID && a.RangeStart == start && a.RangeEnd == end && a.Type == annType {
+			res := *a
+			return &res, nil
+		}
+	}
+	return nil, fmt.Errorf("annotation not found") // 模拟 GORM 的 RecordNotFound
+}
+
+// DeleteAnnotationsByRangeAndTypes 模拟范围和类型的批量删除
+func (s *MemoryStore) DeleteAnnotationsByRangeAndTypes(ctx context.Context, msgID uuid.UUID, start, end int, types []model.AnnotationType) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	typeMap := make(map[model.AnnotationType]bool)
+	for _, t := range types {
+		typeMap[t] = true
+	}
+
+	for id, a := range s.annotations {
+		// 匹配逻辑：同一条消息 + 类型在列表中 + 范围完全一致 (或按需改为重叠)
+		// 这里采用完全一致逻辑，与 Service 层调用匹配
+		if a.MessageID == msgID && a.RangeStart == start && a.RangeEnd == end && typeMap[a.Type] {
+			delete(s.annotations, id)
+		}
+	}
+	return nil
+}
+
+// DeleteAnnotation 模拟带权限校验的删除
+func (s *MemoryStore) DeleteAnnotation(ctx context.Context, id uuid.UUID, userID uuid.UUID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	sid := id.String()
+	ann, ok := s.annotations[sid]
+	if !ok {
+		return nil // 模拟 Delete Ignore
+	}
+
+	// 模拟越权校验
+	if ann.UserID != userID {
+		return fmt.Errorf("permission denied")
+	}
+
+	delete(s.annotations, sid)
+	return nil
+}
+
+// ListAnnotationsByMessageID 模拟按消息拉取并排序
+func (s *MemoryStore) ListAnnotationsByMessageID(ctx context.Context, msgID uuid.UUID, userID uuid.UUID) ([]*model.Annotation, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var list []*model.Annotation
+	for _, a := range s.annotations {
+		// 增加 userID 过滤，确保只能看到自己的标注
+		if a.MessageID == msgID && a.UserID == userID {
+			copyAnn := *a
+			list = append(list, &copyAnn)
+		}
+	}
+
+	// 模拟数据库的 CreatedAt ASC 排序 (假设 ID 生成顺序或手动排序)
+	// 简单起见，这里按 RangeStart 排序，实际生产中应记录 CreatedAt
+	sort.Slice(list, func(i, j int) bool {
+		return list[i].RangeStart < list[j].RangeStart
+	})
+
+	return list, nil
 }
 
 // --- helpers ---

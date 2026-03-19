@@ -15,6 +15,7 @@ import (
 	"rhea-backend/internal/httpapi/middleware"
 	"rhea-backend/internal/llm"
 	"rhea-backend/internal/router"
+	"rhea-backend/internal/service"
 	"rhea-backend/internal/store"
 	"rhea-backend/internal/store/postgres"
 )
@@ -103,6 +104,12 @@ func main() {
 
 	s := httpapi.NewServer()
 
+	// 1. 初始化 Annotation 业务服务
+	annSvc := service.NewAnnotationService(st)
+
+	// 2. 初始化 Annotation HTTP 处理器
+	annotationHandler := &httpapi.AnnotationHandler{AnnSvc: annSvc}
+
 	// 健康检查
 	s.Handle("GET /health", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -129,6 +136,10 @@ func main() {
 	s.Handle("GET /v1/conversations", protectedChain(http.HandlerFunc(chatHandler.ListConversations)))
 	s.Handle("GET /v1/conversations/{id}/messages", protectedChain(http.HandlerFunc(chatHandler.ListConversationMessages)))
 	s.Handle("GET /v1/conversations/{id}/token-sum", protectedChain(http.HandlerFunc(chatHandler.GetConversationTokenSum)))
+
+	s.Handle("POST /v1/annotations", protectedChain(http.HandlerFunc(annotationHandler.Annotate)))
+	s.Handle("GET /v1/messages/{id}/annotations", protectedChain(http.HandlerFunc(annotationHandler.ListByMessage)))
+	s.Handle("DELETE /v1/annotations/{id}", protectedChain(http.HandlerFunc(annotationHandler.Delete)))
 
 	handlerWithCORS := middleware.CORS(s.Handler())
 

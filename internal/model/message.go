@@ -20,6 +20,7 @@ type MessageEntity struct {
 	InputToken  int            `gorm:"default:0"`
 	OutputToken int            `gorm:"default:0"`
 	CreatedAt   time.Time
+	PinnedAt    *time.Time
 }
 
 func (m *MessageEntity) BeforeCreate(tx *gorm.DB) error {
