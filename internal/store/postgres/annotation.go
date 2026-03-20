@@ -116,6 +116,34 @@ func (s *PostgresStore) ListAnnotationsByMessageID(ctx context.Context, msgID uu
 	return results, nil
 }
 
+func (s *PostgresStore) ListAnnotationsByConversationAndMessageIDs(
+	ctx context.Context,
+	convID uuid.UUID,
+	userID uuid.UUID,
+	messageIDs []uuid.UUID,
+) ([]*model.Annotation, error) {
+	var entities []model.AnnotationEntity
+
+	q := s.db.WithContext(ctx).
+		Where("conv_id = ? AND user_id = ?", convID, userID).
+		Order("created_at ASC")
+
+	if len(messageIDs) > 0 {
+		q = q.Where("message_id IN ?", messageIDs)
+	}
+
+	err := q.Find(&entities).Error
+	if err != nil {
+		return nil, err
+	}
+
+	results := make([]*model.Annotation, len(entities))
+	for i, e := range entities {
+		results[i] = s.toDomain(&e)
+	}
+	return results, nil
+}
+
 // --- 内部转换逻辑 ---
 
 func (s *PostgresStore) toDomain(e *model.AnnotationEntity) *model.Annotation {

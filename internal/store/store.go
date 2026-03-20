@@ -55,4 +55,6 @@ type Store interface {
 
 	// ListAnnotationsByMessageID 获取单条消息的所有标注
 	ListAnnotationsByMessageID(ctx context.Context, msgID uuid.UUID, userID uuid.UUID) ([]*model.Annotation, error)
+
+	ListAnnotationsByConversationAndMessageIDs( ctx context.Context, convID uuid.UUID, userID uuid.UUID, messageIDs []uuid.UUID, ) ([]*model.Annotation, error)
 }

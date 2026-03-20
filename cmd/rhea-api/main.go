@@ -139,6 +139,7 @@ func main() {
 
 	s.Handle("POST /v1/annotations", protectedChain(http.HandlerFunc(annotationHandler.Annotate)))
 	s.Handle("GET /v1/messages/{id}/annotations", protectedChain(http.HandlerFunc(annotationHandler.ListByMessage)))
+	s.Handle("GET /v1/conversations/{id}/annotations", protectedChain(http.HandlerFunc(annotationHandler.ListByConversation)))
 	s.Handle("DELETE /v1/annotations/{id}", protectedChain(http.HandlerFunc(annotationHandler.Delete)))
 
 	handlerWithCORS := middleware.CORS(s.Handler())
