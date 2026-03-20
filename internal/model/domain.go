@@ -78,3 +78,10 @@ type Annotation struct {
 	// 扩展字段：如果以后有特殊的前端需求，可以先塞在这里
 	ExtraAttrs map[string]interface{} `json:"extra_attrs"`
 }
+
+type RemoveHighlightRangeRequest struct {
+	MessageID  uuid.UUID `json:"message_id"`
+	ConvID     uuid.UUID `json:"conv_id"`
+	RangeStart int       `json:"range_start"`
+	RangeEnd   int       `json:"range_end"`
+}

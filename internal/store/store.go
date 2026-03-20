@@ -57,4 +57,8 @@ type Store interface {
 	ListAnnotationsByMessageID(ctx context.Context, msgID uuid.UUID, userID uuid.UUID) ([]*model.Annotation, error)
 
 	ListAnnotationsByConversationAndMessageIDs( ctx context.Context, convID uuid.UUID, userID uuid.UUID, messageIDs []uuid.UUID, ) ([]*model.Annotation, error)
+
+	ListAnnotationsByMessageIDAndType( ctx context.Context, msgID uuid.UUID, userID uuid.UUID, annType model.AnnotationType, ) ([]*model.Annotation, error)
+
+	DeleteAnnotationsByIDs( ctx context.Context, ids []uuid.UUID, userID uuid.UUID, ) error
 }

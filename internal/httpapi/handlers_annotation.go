@@ -139,3 +139,31 @@ func (h *AnnotationHandler) Delete(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusNoContent)
 }
+
+func (h *AnnotationHandler) RemoveHighlightRange(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	uid, ok := auth.GetUserID(r.Context())
+	if !ok {
+		respondError(w, http.StatusUnauthorized, "unauthorized: user not found in context")
+		return
+	}
+
+	var req model.RemoveHighlightRangeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+
+	if err := h.AnnSvc.RemoveHighlightInRange(r.Context(), uid, req); err != nil {
+		respondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"ok": true,
+	})
+}
