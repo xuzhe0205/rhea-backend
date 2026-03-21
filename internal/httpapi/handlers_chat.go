@@ -30,6 +30,10 @@ type chatResponse struct {
 	ConversationID string `json:"conversation_id"` // 让前端能拿到新 ID
 }
 
+type patchFavoriteRequest struct {
+	IsFavorite bool `json:"is_favorite"`
+}
+
 func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -225,4 +229,183 @@ func (h *ChatHandler) GetConversationTokenSum(w http.ResponseWriter, r *http.Req
 		"conversation_id": conv.ID,
 		"token_sum":       conv.CumulativeTokens,
 	})
+}
+
+func (h *ChatHandler) PatchMessageFavorite(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPatch {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	userID, ok := auth.GetUserID(r.Context())
+	if !ok {
+		http.Error(w, "Unauthorized: User not found in context", http.StatusUnauthorized)
+		return
+	}
+
+	messageIDStr := r.PathValue("id")
+	if messageIDStr == "" {
+		http.Error(w, "missing message id", http.StatusBadRequest)
+		return
+	}
+
+	messageID, err := uuid.Parse(messageIDStr)
+	if err != nil {
+		http.Error(w, "invalid message id format", http.StatusBadRequest)
+		return
+	}
+
+	var req patchFavoriteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		var syntaxErr *json.SyntaxError
+		if errors.As(err, &syntaxErr) {
+			msg := fmt.Sprintf("Invalid JSON at byte offset %d", syntaxErr.Offset)
+			http.Error(w, msg, http.StatusBadRequest)
+			return
+		}
+
+		var unmarshalErr *json.UnmarshalTypeError
+		if errors.As(err, &unmarshalErr) {
+			msg := fmt.Sprintf("Field %q should be a %s", unmarshalErr.Field, unmarshalErr.Type)
+			http.Error(w, msg, http.StatusBadRequest)
+			return
+		}
+
+		http.Error(w, "Bad request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if err := h.Agent.SetMessageFavorite(r.Context(), userID, messageID, req.IsFavorite); err != nil {
+		if strings.Contains(err.Error(), "access denied") {
+			http.Error(w, err.Error(), http.StatusForbidden)
+			return
+		}
+		if strings.Contains(err.Error(), "not found") {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		http.Error(w, "Failed to update favorite: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"message_id":  messageID,
+		"is_favorite": req.IsFavorite,
+		"updated":     true,
+	})
+}
+
+func (h *ChatHandler) ListFavoriteMessages(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	userID, ok := auth.GetUserID(r.Context())
+	if !ok {
+		http.Error(w, "Unauthorized: User not found in context", http.StatusUnauthorized)
+		return
+	}
+
+	query := r.URL.Query()
+
+	limit := 50
+	if limitStr := query.Get("limit"); limitStr != "" {
+		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
+			limit = l
+		}
+	}
+
+	offset := 0
+	if offsetStr := query.Get("offset"); offsetStr != "" {
+		if o, err := strconv.Atoi(offsetStr); err == nil && o >= 0 {
+			offset = o
+		}
+	}
+
+	rows, err := h.Agent.ListFavoriteMessages(r.Context(), userID, limit, offset)
+	if err != nil {
+		http.Error(w, "Failed to fetch favorite messages: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if rows == nil {
+		rows = []model.FavoriteMessageRow{}
+	}
+
+	_ = json.NewEncoder(w).Encode(rows)
+}
+
+func (h *ChatHandler) ListMessagesForFavoriteJump(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	userID, ok := auth.GetUserID(r.Context())
+	if !ok {
+		http.Error(w, "Unauthorized: User not found in context", http.StatusUnauthorized)
+		return
+	}
+
+	convIDStr := r.PathValue("id")
+	if convIDStr == "" {
+		http.Error(w, "missing conversation id", http.StatusBadRequest)
+		return
+	}
+
+	convID, err := uuid.Parse(convIDStr)
+	if err != nil {
+		http.Error(w, "invalid conversation id format", http.StatusBadRequest)
+		return
+	}
+
+	messageIDStr := r.PathValue("messageId")
+	if messageIDStr == "" {
+		http.Error(w, "missing message id", http.StatusBadRequest)
+		return
+	}
+
+	messageID, err := uuid.Parse(messageIDStr)
+	if err != nil {
+		http.Error(w, "invalid message id format", http.StatusBadRequest)
+		return
+	}
+
+	query := r.URL.Query()
+	olderBuffer := 50
+	if bufferStr := query.Get("older_buffer"); bufferStr != "" {
+		if b, err := strconv.Atoi(bufferStr); err == nil && b >= 0 {
+			olderBuffer = b
+		}
+	}
+
+	msgs, err := h.Agent.ListMessagesForFavoriteJump(
+		r.Context(),
+		userID,
+		convID,
+		messageID,
+		olderBuffer,
+	)
+	if err != nil {
+		if strings.Contains(err.Error(), "access denied") {
+			http.Error(w, err.Error(), http.StatusForbidden)
+			return
+		}
+		if strings.Contains(err.Error(), "not found") {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		http.Error(w, "Failed to fetch favorite jump messages: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if msgs == nil {
+		msgs = []model.Message{}
+	}
+
+	_ = json.NewEncoder(w).Encode(msgs)
 }

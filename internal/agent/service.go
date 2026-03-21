@@ -244,3 +244,60 @@ func (s *Service) ListConversationMessages(ctx context.Context, userID uuid.UUID
 	// beforeID: 游标，由 Handler 从 URL Query 中提取
 	return s.Store.GetMessagesByConvID(ctx, convID.String(), limit, "asc", beforeID)
 }
+
+// ListFavoriteMessages returns the current user's favorited messages.
+func (s *Service) ListFavoriteMessages(
+	ctx context.Context,
+	userID uuid.UUID,
+	limit int,
+	offset int,
+) ([]model.FavoriteMessageRow, error) {
+	return s.Store.ListFavoriteMessages(ctx, userID.String(), limit, offset)
+}
+
+// ListMessagesForFavoriteJump returns:
+// 1) up to olderBuffer messages before the favorite message
+// 2) the favorite message itself
+// 3) all messages after it up to the latest message in the conversation
+func (s *Service) ListMessagesForFavoriteJump(
+	ctx context.Context,
+	userID uuid.UUID,
+	convID uuid.UUID,
+	messageID uuid.UUID,
+	olderBuffer int,
+) ([]model.Message, error) {
+	conv, err := s.Store.GetConversation(ctx, convID.String())
+	if err != nil {
+		return nil, fmt.Errorf("conversation not found: %w", err)
+	}
+
+	if conv.UserID != userID {
+		return nil, fmt.Errorf("access denied: user %s does not own conversation %s", userID, convID)
+	}
+
+	return s.Store.GetMessagesForFavoriteJump(ctx, convID.String(), messageID.String(), olderBuffer)
+}
+
+// SetMessageFavorite updates the favorite state of a message after ownership check.
+func (s *Service) SetMessageFavorite(
+	ctx context.Context,
+	userID uuid.UUID,
+	messageID uuid.UUID,
+	isFavorite bool,
+) error {
+	msg, err := s.Store.GetMessageByID(ctx, messageID.String())
+	if err != nil {
+		return fmt.Errorf("message not found: %w", err)
+	}
+
+	conv, err := s.Store.GetConversation(ctx, msg.ConvID.String())
+	if err != nil {
+		return fmt.Errorf("conversation not found for message: %w", err)
+	}
+
+	if conv.UserID != userID {
+		return fmt.Errorf("access denied: user %s does not own message %s", userID, messageID)
+	}
+
+	return s.Store.SetMessageFavorite(ctx, messageID.String(), isFavorite)
+}

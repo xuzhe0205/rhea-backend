@@ -133,6 +133,10 @@ func main() {
 	streamHandler := &httpapi.ChatStreamHandler{Agent: svc}
 	s.Handle("POST /v1/chat/stream", protectedChain(streamHandler))
 
+	s.Handle("PATCH /v1/messages/{id}/favorite", protectedChain(http.HandlerFunc(chatHandler.PatchMessageFavorite)))
+	s.Handle("GET /v1/messages/favorites", protectedChain(http.HandlerFunc(chatHandler.ListFavoriteMessages)))
+	s.Handle("GET /v1/conversations/{id}/favorites/{messageId}/messages", protectedChain(http.HandlerFunc(chatHandler.ListMessagesForFavoriteJump)))
+
 	s.Handle("GET /v1/conversations", protectedChain(http.HandlerFunc(chatHandler.ListConversations)))
 	s.Handle("GET /v1/conversations/{id}/messages", protectedChain(http.HandlerFunc(chatHandler.ListConversationMessages)))
 	s.Handle("GET /v1/conversations/{id}/token-sum", protectedChain(http.HandlerFunc(chatHandler.GetConversationTokenSum)))

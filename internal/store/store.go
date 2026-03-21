@@ -21,6 +21,10 @@ type Store interface {
 	// Message 相关
 	AppendMessage(ctx context.Context, conversationID string, parentID *string, msg model.Message, metadata map[string]interface{}) (string, error)
 	GetMessagesByConvID(ctx context.Context, conversationID string, limit int, order string, beforeID string) ([]model.Message, error)
+	GetMessagesForFavoriteJump(ctx context.Context, conversationID string, messageID string, olderBuffer int) ([]model.Message, error)
+	SetMessageFavorite(ctx context.Context, messageID string, isFavorite bool) error
+	ListFavoriteMessages(ctx context.Context, userID string, limit int, offset int) ([]model.FavoriteMessageRow, error)
+	GetMessageByID(ctx context.Context, messageID string) (*model.Message, error)
 
 	// Conversation 相关
 	GetConversation(ctx context.Context, id string) (*model.Conversation, error)
@@ -56,9 +60,9 @@ type Store interface {
 	// ListAnnotationsByMessageID 获取单条消息的所有标注
 	ListAnnotationsByMessageID(ctx context.Context, msgID uuid.UUID, userID uuid.UUID) ([]*model.Annotation, error)
 
-	ListAnnotationsByConversationAndMessageIDs( ctx context.Context, convID uuid.UUID, userID uuid.UUID, messageIDs []uuid.UUID, ) ([]*model.Annotation, error)
+	ListAnnotationsByConversationAndMessageIDs(ctx context.Context, convID uuid.UUID, userID uuid.UUID, messageIDs []uuid.UUID) ([]*model.Annotation, error)
 
-	ListAnnotationsByMessageIDAndType( ctx context.Context, msgID uuid.UUID, userID uuid.UUID, annType model.AnnotationType, ) ([]*model.Annotation, error)
+	ListAnnotationsByMessageIDAndType(ctx context.Context, msgID uuid.UUID, userID uuid.UUID, annType model.AnnotationType) ([]*model.Annotation, error)
 
-	DeleteAnnotationsByIDs( ctx context.Context, ids []uuid.UUID, userID uuid.UUID, ) error
+	DeleteAnnotationsByIDs(ctx context.Context, ids []uuid.UUID, userID uuid.UUID) error
 }
