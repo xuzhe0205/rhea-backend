@@ -301,3 +301,26 @@ func (s *Service) SetMessageFavorite(
 
 	return s.Store.SetMessageFavorite(ctx, messageID.String(), isFavorite)
 }
+
+func (s *Service) SetMessageFavoriteLabel(
+	ctx context.Context,
+	userID uuid.UUID,
+	messageID uuid.UUID,
+	label *string,
+) error {
+	msg, err := s.Store.GetMessageByID(ctx, messageID.String())
+	if err != nil {
+		return fmt.Errorf("message not found: %w", err)
+	}
+
+	conv, err := s.Store.GetConversation(ctx, msg.ConvID.String())
+	if err != nil {
+		return fmt.Errorf("conversation not found for message: %w", err)
+	}
+
+	if conv.UserID != userID {
+		return fmt.Errorf("access denied: user %s does not own message %s", userID, messageID)
+	}
+
+	return s.Store.SetMessageFavoriteLabel(ctx, messageID.String(), label)
+}

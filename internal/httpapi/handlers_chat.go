@@ -34,6 +34,10 @@ type patchFavoriteRequest struct {
 	IsFavorite bool `json:"is_favorite"`
 }
 
+type patchFavoriteLabelRequest struct {
+	FavoriteLabel string `json:"favorite_label"`
+}
+
 func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -408,4 +412,61 @@ func (h *ChatHandler) ListMessagesForFavoriteJump(w http.ResponseWriter, r *http
 	}
 
 	_ = json.NewEncoder(w).Encode(msgs)
+}
+
+func (h *ChatHandler) PatchMessageFavoriteLabel(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPatch {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	userID, ok := auth.GetUserID(r.Context())
+	if !ok {
+		http.Error(w, "Unauthorized: User not found in context", http.StatusUnauthorized)
+		return
+	}
+
+	messageIDStr := r.PathValue("id")
+	if messageIDStr == "" {
+		http.Error(w, "missing message id", http.StatusBadRequest)
+		return
+	}
+
+	messageID, err := uuid.Parse(messageIDStr)
+	if err != nil {
+		http.Error(w, "invalid message id format", http.StatusBadRequest)
+		return
+	}
+
+	var req patchFavoriteLabelRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Bad request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	var labelPtr *string
+	trimmed := strings.TrimSpace(req.FavoriteLabel)
+	if trimmed != "" {
+		labelPtr = &trimmed
+	}
+
+	if err := h.Agent.SetMessageFavoriteLabel(r.Context(), userID, messageID, labelPtr); err != nil {
+		if strings.Contains(err.Error(), "access denied") {
+			http.Error(w, err.Error(), http.StatusForbidden)
+			return
+		}
+		if strings.Contains(err.Error(), "not found") {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		http.Error(w, "Failed to update favorite label: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"message_id":     messageID,
+		"favorite_label": labelPtr,
+		"updated":        true,
+	})
 }

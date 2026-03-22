@@ -101,12 +101,14 @@ func (s *PostgresStore) GetMessagesByConvID(ctx context.Context, conversationID 
 		}
 
 		msgs[i] = model.Message{
-			ID:        m.ID,
-			ConvID:    m.ConvID,
-			Role:      m.Role,
-			Content:   m.Content,
-			CreatedAt: m.CreatedAt,
-			Metadata:  meta,
+			ID:            m.ID,
+			ConvID:        m.ConvID,
+			Role:          m.Role,
+			Content:       m.Content,
+			CreatedAt:     m.CreatedAt,
+			Metadata:      meta,
+			IsFavorite:    m.IsFavorite,
+			FavoriteLabel: m.FavoriteLabel,
 		}
 	}
 
@@ -190,12 +192,14 @@ func (s *PostgresStore) GetMessagesForFavoriteJump(
 		}
 
 		msgs[i] = model.Message{
-			ID:        m.ID,
-			ConvID:    m.ConvID,
-			Role:      m.Role,
-			Content:   m.Content,
-			CreatedAt: m.CreatedAt,
-			Metadata:  meta,
+			ID:            m.ID,
+			ConvID:        m.ConvID,
+			Role:          m.Role,
+			Content:       m.Content,
+			CreatedAt:     m.CreatedAt,
+			Metadata:      meta,
+			IsFavorite:    m.IsFavorite,
+			FavoriteLabel: m.FavoriteLabel,
 		}
 	}
 
@@ -258,7 +262,8 @@ func (s *PostgresStore) ListFavoriteMessages(
 			m.role AS role,
 			m.content AS content,
 			m.created_at AS created_at,
-			m.favorited_at AS favorited_at
+			m.favorited_at AS favorited_at,
+			m.favorite_label AS favorite_label
 		`).
 		Joins("JOIN conversation_entities AS c ON c.id = m.conv_id").
 		Where("c.user_id = ? AND m.is_favorite = ?", userUUID, true).
@@ -296,13 +301,40 @@ func (s *PostgresStore) GetMessageByID(ctx context.Context, messageID string) (*
 	}
 
 	return &model.Message{
-		ID:           dbMsg.ID,
-		ConvID:       dbMsg.ConvID,
-		Role:         dbMsg.Role,
-		Content:      dbMsg.Content,
-		InputTokens:  dbMsg.InputToken,
-		OutputTokens: dbMsg.OutputToken,
-		CreatedAt:    dbMsg.CreatedAt,
-		Metadata:     meta,
+		ID:            dbMsg.ID,
+		ConvID:        dbMsg.ConvID,
+		Role:          dbMsg.Role,
+		Content:       dbMsg.Content,
+		InputTokens:   dbMsg.InputToken,
+		OutputTokens:  dbMsg.OutputToken,
+		CreatedAt:     dbMsg.CreatedAt,
+		Metadata:      meta,
+		IsFavorite:    dbMsg.IsFavorite,
+		FavoriteLabel: dbMsg.FavoriteLabel,
 	}, nil
+}
+
+func (s *PostgresStore) SetMessageFavoriteLabel(
+	ctx context.Context,
+	messageID string,
+	label *string,
+) error {
+	msgUUID, err := uuid.Parse(messageID)
+	if err != nil {
+		return fmt.Errorf("invalid message uuid: %w", err)
+	}
+
+	result := s.db.WithContext(ctx).
+		Model(&model.MessageEntity{}).
+		Where("id = ?", msgUUID).
+		Update("favorite_label", label)
+
+	if result.Error != nil {
+		return fmt.Errorf("failed to update favorite label: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("message not found")
+	}
+
+	return nil
 }

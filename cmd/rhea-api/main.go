@@ -136,6 +136,7 @@ func main() {
 	s.Handle("PATCH /v1/messages/{id}/favorite", protectedChain(http.HandlerFunc(chatHandler.PatchMessageFavorite)))
 	s.Handle("GET /v1/messages/favorites", protectedChain(http.HandlerFunc(chatHandler.ListFavoriteMessages)))
 	s.Handle("GET /v1/conversations/{id}/favorites/{messageId}/messages", protectedChain(http.HandlerFunc(chatHandler.ListMessagesForFavoriteJump)))
+	s.Handle("PATCH /v1/messages/{id}/favorite-label", protectedChain(http.HandlerFunc(chatHandler.PatchMessageFavoriteLabel)))
 
 	s.Handle("GET /v1/conversations", protectedChain(http.HandlerFunc(chatHandler.ListConversations)))
 	s.Handle("GET /v1/conversations/{id}/messages", protectedChain(http.HandlerFunc(chatHandler.ListConversationMessages)))

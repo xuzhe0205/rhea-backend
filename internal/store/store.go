@@ -25,6 +25,7 @@ type Store interface {
 	SetMessageFavorite(ctx context.Context, messageID string, isFavorite bool) error
 	ListFavoriteMessages(ctx context.Context, userID string, limit int, offset int) ([]model.FavoriteMessageRow, error)
 	GetMessageByID(ctx context.Context, messageID string) (*model.Message, error)
+	SetMessageFavoriteLabel(ctx context.Context, messageID string, label *string) error
 
 	// Conversation 相关
 	GetConversation(ctx context.Context, id string) (*model.Conversation, error)

@@ -16,14 +16,16 @@ const (
 )
 
 type Message struct {
-	ID           uuid.UUID              `json:"id"`
-	ConvID       uuid.UUID              `json:"conv_id"`
-	Role         Role                   `json:"role"`
-	Content      string                 `json:"content"`
-	InputTokens  int                    `json:"input_tokens"`
-	OutputTokens int                    `json:"output_tokens"`
-	CreatedAt    time.Time              `json:"created_at"`
-	Metadata     map[string]interface{} `json:"metadata,omitempty"`
+	ID            uuid.UUID              `json:"id"`
+	ConvID        uuid.UUID              `json:"conv_id"`
+	Role          Role                   `json:"role"`
+	Content       string                 `json:"content"`
+	InputTokens   int                    `json:"input_tokens"`
+	OutputTokens  int                    `json:"output_tokens"`
+	CreatedAt     time.Time              `json:"created_at"`
+	Metadata      map[string]interface{} `json:"metadata,omitempty"`
+	IsFavorite    bool                   `json:"is_favorite"`
+	FavoriteLabel *string                `json:"favorite_label,omitempty"`
 }
 
 type Conversation struct {
@@ -88,10 +90,11 @@ type RemoveHighlightRangeRequest struct {
 }
 
 type FavoriteMessageRow struct {
-	ID          uuid.UUID  `json:"id"`
-	ConvID      uuid.UUID  `json:"conversationId"`
-	Role        Role       `json:"role"`
-	Content     string     `json:"content"`
-	CreatedAt   time.Time  `json:"createdAt"`
-	FavoritedAt *time.Time `json:"favoritedAt"`
+	ID            uuid.UUID  `json:"id"`
+	ConvID        uuid.UUID  `json:"conversationId"`
+	Role          Role       `json:"role"`
+	Content       string     `json:"content"`
+	CreatedAt     time.Time  `json:"createdAt"`
+	FavoritedAt   *time.Time `json:"favoritedAt"`
+	FavoriteLabel *string    `json:"favorite_label,omitempty"`
 }
