@@ -60,7 +60,6 @@ func (h *ChatStreamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 
-		// Split on \n and write one data: line per line.
 		lines := strings.Split(data, "\n")
 		for _, line := range lines {
 			if _, err := fmt.Fprintf(w, "data: %s\n", line); err != nil {
@@ -68,7 +67,6 @@ func (h *ChatStreamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		// End of event
 		if _, err := fmt.Fprint(w, "\n"); err != nil {
 			return err
 		}
@@ -77,10 +75,20 @@ func (h *ChatStreamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return nil
 	}
 
-	convID, err := h.Agent.ChatStream(r.Context(), req.ConversationID, req.Message, func(delta string) error {
-		return writeEvent("delta", delta)
-	})
+	callbacks := agent.StreamCallbacks{
+		OnDelta: func(delta string) error {
+			return writeEvent("delta", delta)
+		},
+		OnMeta: func(payload map[string]any) error {
+			b, err := json.Marshal(payload)
+			if err != nil {
+				return err
+			}
+			return writeEvent("meta", string(b))
+		},
+	}
 
+	_, err := h.Agent.ChatStream(r.Context(), req.ConversationID, req.Message, callbacks)
 	if errors.Is(err, agent.ErrNoProvider) {
 		_ = writeEvent("error", "no provider available")
 		return
@@ -88,18 +96,6 @@ func (h *ChatStreamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		_ = writeEvent("error", err.Error())
 		return
-	}
-
-	if convID != "" {
-		// 这里的逻辑是：既然 AI 已经说完了，标题生成大概率也跑完了（标题生成通常比长回复快）
-		// 我们从数据库拉取最新的对话元数据
-		// 建议在 Service 里封装一个 GetConversation 方法
-		conv, err := h.Agent.GetConversation(r.Context(), convID)
-		if err == nil && conv.Title != "" {
-			// 发送一个新的事件类型：title
-			_ = writeEvent("title", conv.Title)
-		}
-		_ = writeEvent("conv_id", convID)
 	}
 
 	_ = writeEvent("done", "[DONE]")

@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log"
 	"strings"
 	"time"
@@ -15,38 +14,39 @@ import (
 	"github.com/google/uuid"
 )
 
+type StreamCallbacks struct {
+	OnDelta func(delta string) error
+	OnMeta  func(payload map[string]any) error
+}
+
 func (s *Service) ChatStream(
 	ctx context.Context,
 	conversationID string,
 	userText string,
-	emit func(delta string) error,
+	cb StreamCallbacks,
 ) (string, error) {
 	if s.Store == nil || s.Builder == nil || s.Router == nil {
 		return "", errors.New("agent service not configured")
 	}
-	if emit == nil {
-		return "", errors.New("emit function is required")
+	if cb.OnDelta == nil {
+		return "", errors.New("OnDelta callback is required")
 	}
 
-	// 0. 获取真实身份 🚀
+	// 0. 获取真实身份
 	userID, err := s.getUserID(ctx)
 	if err != nil {
 		return "", err
 	}
 
-	// 1) Persist user message even if provider fails later
+	// 1) 如果是新对话，先创建 conversation
 	isNewConversation := conversationID == ""
 	if isNewConversation {
 		newID := uuid.New()
 		_, err := s.Store.CreateConversation(ctx, &model.Conversation{
-			ID:     newID,
-			UserID: userID,
-
-			// TODO: 后期接入 Title Generator，根据 userText 生成标题
-			// 目前先简单截取前 20 个字符或硬编码
-			Title: "New Chat: " + truncate(userText, 20),
-
-			Summary: "", // 初始摘要为空
+			ID:      newID,
+			UserID:  userID,
+			Title:   "New Chat: " + truncate(userText, 20),
+			Summary: "",
 		})
 		if err != nil {
 			return "", err
@@ -54,13 +54,11 @@ func (s *Service) ChatStream(
 		conversationID = newID.String()
 	}
 
-	// 2) 获取当前 parentID (用于存储用户消息和最后的更新)
+	// 2) 获取当前对话状态（拿到最新的 LastMsgID 作为父节点）
 	conv, err := s.Store.GetConversation(ctx, conversationID)
 	if err != nil {
 		return "", err
 	}
-
-	// 🛡️ 增加所有权检查：确保这个对话真的属于当前登录用户
 	if conv.UserID != userID {
 		return "", errors.New("forbidden: access to conversation denied")
 	}
@@ -71,80 +69,83 @@ func (s *Service) ChatStream(
 		parentID = &p
 	}
 
-	// 3) 存储用户消息 (拿到 newUserMsgID)
+	// 3) 先落库 user message，拿到真实 ID
 	newUserMsgID, err := s.Store.AppendMessage(ctx, conversationID, parentID, model.Message{
 		Role:    model.RoleUser,
 		Content: userText,
 	}, nil)
 	if err != nil {
-		return conversationID, err
+		return "", err
 	}
 
-	// 4) 异步处理title的生成，运用LLM，并且在这个异步方法内把title更新到conversation_entities
-	if isNewConversation {
-		s.handleTitleGeneration(conversationID, userText)
+	// 4) 立刻把真实 conversation_id + user_message_id 发回前端
+	if cb.OnMeta != nil {
+		if err := cb.OnMeta(map[string]any{
+			"conversation_id": conversationID,
+			"user_message_id": newUserMsgID,
+		}); err != nil {
+			return conversationID, err
+		}
 	}
 
-	// 5) Build Context (此时包含了刚才存的消息)
+	// 5) 构建上下文
 	msgs, err := s.Builder.Build(ctx, conversationID, "")
 	if err != nil {
-		return conversationID, err
+		return "", err
 	}
 
-	// 6) Choose and call provider
-	// 传入 ctx 触发智能路由
+	// 6) 按你现有 Router 的流式 provider 链选择逻辑来跑
+	var sb strings.Builder
+	var finalUsage *llm.Usage
+	var hasPickedProvider bool
+	var lastErr error
+
+	emit := func(delta string) error {
+		sb.WriteString(delta)
+		return cb.OnDelta(delta)
+	}
+
 	providerPriorityChain := s.Router.ChooseChain(ctx, userText)
 	if len(providerPriorityChain) == 0 {
 		return "", ErrNoProvider
 	}
 
-	var lastErr error
-	var sb strings.Builder
-	var finalUsage *llm.Usage // 🚀 新增：用于捕获流结束时的 Token 统计
-
-	hasPickedProvider := false
 	for _, p := range providerPriorityChain {
 		if p == nil {
 			continue
 		}
 		hasPickedProvider = true
-		sb.Reset()
-		finalUsage = nil // 重置统计
 
-		modelInfo := fmt.Sprintf("::__metadata__:model:%s:%s::", p.Name(), p.ModelName())
-		_ = emit(modelInfo)
+		log.Printf("[ChatStream] trying provider=%s", p.Name())
 
-		// 7) Stream 核心改动：适配新的 emit 签名 (delta, usage)
+		// 这里假设你的 Provider.Stream 签名是：
+		// Stream(ctx, msgs, func(delta string, usage *llm.Usage) error) error
 		lastErr = p.Stream(ctx, msgs, func(delta string, usage *llm.Usage) error {
 			if usage != nil {
 				finalUsage = usage
 			}
-			if delta != "" {
-				sb.WriteString(delta)
-				return emit(delta)
+			if delta == "" {
+				return nil
 			}
-			return nil
+			return emit(delta)
 		})
 
-		// ✨ 关键改动：判断是否需要重试
-		if lastErr != nil {
-			// 如果已经输出了内容，绝对不能重试，否则前端会看到重复且混乱的内容
-			if sb.Len() > 0 {
-				return conversationID, lastErr
-			}
+		if lastErr == nil {
+			break
+		}
 
-			// 判断错误是否值得重试 (429, 503 等)
-			if netutil.IsRateLimitError(lastErr) || strings.Contains(lastErr.Error(), "503") {
-				log.Printf("[Router] Provider %s (%s) throttled. Error: %v. Trying next...", p.Name(), p.ModelName(), lastErr)
-				continue // 👈 跳到下一个 Provider
-			}
-
-			// 如果是其他致命错误 (比如 API Key 错写了)，直接终止
+		// 如果已经吐出过内容，就不要再切 provider，直接返回错误
+		if sb.Len() > 0 {
 			return conversationID, lastErr
 		}
 
-		// 如果成功跑完（lastErr == nil），直接退出循环
-		break
+		if netutil.IsRateLimitError(lastErr) || strings.Contains(lastErr.Error(), "503") {
+			log.Printf("[ChatStream] provider=%s throttled: %v; trying next", p.Name(), lastErr)
+			continue
+		}
+
+		log.Printf("[ChatStream] provider=%s failed: %v", p.Name(), lastErr)
+		return conversationID, lastErr
 	}
 
 	if !hasPickedProvider {
@@ -154,11 +155,15 @@ func (s *Service) ChatStream(
 		return conversationID, lastErr
 	}
 
-	// 7.5 持久化 Context
+	// 7) 新对话异步标题生成
+	if isNewConversation {
+		s.handleTitleGeneration(conversationID, userText)
+	}
+
+	// 8) assistant 回复落库
 	persistCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// 8) 存储 AI 回复 (带上 Token 消耗)
 	fullReply := sb.String()
 	inputT, outputT := 0, 0
 	if finalUsage != nil {
@@ -169,27 +174,42 @@ func (s *Service) ChatStream(
 	aiMsgID, err := s.Store.AppendMessage(persistCtx, conversationID, &newUserMsgID, model.Message{
 		Role:         model.RoleAssistant,
 		Content:      fullReply,
-		InputTokens:  inputT,  // 🚀 存入消息表
-		OutputTokens: outputT, // 🚀 存入消息表
+		InputTokens:  inputT,
+		OutputTokens: outputT,
 	}, nil)
 	if err != nil {
 		log.Printf("[ChatStream] Error saving AI message: %v", err)
 		return conversationID, err
 	}
 
-	// 9) 【核心原子更新】更新 Conversation 指针 + 累加 Token
+	// 9) 更新 Conversation 状态并累加 token
 	totalDelta := inputT + outputT
-	// 注意：这里调用的是你刚才重构的返回 int 的 UpdateConversationStatus
 	updatedTotal, err := s.Store.UpdateConversationStatus(persistCtx, conversationID, aiMsgID, parentID, totalDelta)
 	if err != nil {
 		log.Printf("[ChatStream] Error updating pointer and tokens: %v", err)
 		return conversationID, err
 	}
 
-	// 10) 阈值检查 (100万 Token 预警)
 	if updatedTotal > 1000000 {
 		log.Printf("⚠️ [Quota] Conv %s has reached %d tokens!", conversationID, updatedTotal)
-		// 这里的逻辑可以根据你的业务需求扩展，比如发一个特殊的 emit 给前端
+	}
+
+	// 10) assistant message 落库后，再把真实 assistant id 发给前端
+	if cb.OnMeta != nil {
+		payload := map[string]any{
+			"conversation_id":      conversationID,
+			"assistant_message_id": aiMsgID,
+		}
+
+		// 如果此时 title 已经生成好了，一并带回去；没有也没关系
+		latestConv, err := s.Store.GetConversation(persistCtx, conversationID)
+		if err == nil && strings.TrimSpace(latestConv.Title) != "" {
+			payload["title"] = latestConv.Title
+		}
+
+		if err := cb.OnMeta(payload); err != nil {
+			return conversationID, err
+		}
 	}
 
 	return conversationID, nil
