@@ -159,7 +159,7 @@ func (s *PostgresStore) SetConversationPinned(ctx context.Context, convID string
 	result := s.db.WithContext(ctx).
 		Model(&model.ConversationEntity{}).
 		Where("id = ?", uID).
-		Updates(updates)
+		UpdateColumns(updates)
 
 	if result.Error != nil {
 		return result.Error
