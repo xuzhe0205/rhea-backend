@@ -141,6 +141,8 @@ func main() {
 	s.Handle("GET /v1/conversations", protectedChain(http.HandlerFunc(chatHandler.ListConversations)))
 	s.Handle("GET /v1/conversations/{id}/messages", protectedChain(http.HandlerFunc(chatHandler.ListConversationMessages)))
 	s.Handle("GET /v1/conversations/{id}/token-sum", protectedChain(http.HandlerFunc(chatHandler.GetConversationTokenSum)))
+	s.Handle("PATCH /v1/conversations/{id}/pin", protectedChain(http.HandlerFunc(chatHandler.PatchConversationPin)))
+	s.Handle("GET /v1/conversations/pinned", protectedChain(http.HandlerFunc(chatHandler.ListPinnedConversations)))
 
 	s.Handle("POST /v1/annotations", protectedChain(http.HandlerFunc(annotationHandler.Annotate)))
 	s.Handle("GET /v1/messages/{id}/annotations", protectedChain(http.HandlerFunc(annotationHandler.ListByMessage)))

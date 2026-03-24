@@ -34,6 +34,8 @@ type Store interface {
 	UpdateConversationTitle(ctx context.Context, convID string, title string) error
 	ListConversationsByUserID(ctx context.Context, userID uuid.UUID) ([]*model.Conversation, error)
 	IncrementConversationTokenUsage(ctx context.Context, convID string, delta int) error
+	ListPinnedConversationsByUserID(ctx context.Context, userID uuid.UUID) ([]*model.Conversation, error)
+	SetConversationPinned(ctx context.Context, convID string, isPinned bool) error
 
 	// Summary 相关
 	GetSummary(ctx context.Context, conversationID string) (string, error)

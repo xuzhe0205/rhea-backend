@@ -43,6 +43,8 @@ func (s *PostgresStore) GetConversation(ctx context.Context, id string) (*model.
 		LastMsgID:        entity.LastMsgID,
 		Summary:          entity.Summary,
 		UserID:           entity.UserID,
+		IsPinned:         entity.IsPinned,
+		PinnedAt:         entity.PinnedAt,
 		CumulativeTokens: entity.TokenSum,
 	}, nil
 }
@@ -53,6 +55,8 @@ func (s *PostgresStore) ListConversationsByUserID(ctx context.Context, userID uu
 
 	err := s.db.WithContext(ctx).
 		Where("user_id = ?", userID).
+		Order("is_pinned DESC").
+		Order("pinned_at DESC NULLS LAST").
 		Order("updated_at DESC").
 		Find(&entities).Error
 
@@ -68,6 +72,8 @@ func (s *PostgresStore) ListConversationsByUserID(ctx context.Context, userID uu
 			Title:     e.Title,
 			Summary:   e.Summary,
 			LastMsgID: e.LastMsgID,
+			IsPinned:  e.IsPinned,
+			PinnedAt:  e.PinnedAt,
 		}
 	}
 	return results, nil
@@ -131,4 +137,61 @@ func (s *PostgresStore) IncrementConversationTokenUsage(ctx context.Context, con
 	return s.db.WithContext(ctx).Model(&model.ConversationEntity{}).
 		Where("id = ?", uID).
 		Update("token_sum", gorm.Expr("token_sum + ?", delta)).Error
+}
+
+func (s *PostgresStore) SetConversationPinned(ctx context.Context, convID string, isPinned bool) error {
+	uID, err := uuid.Parse(convID)
+	if err != nil {
+		return fmt.Errorf("invalid conversation id: %w", err)
+	}
+
+	updates := map[string]interface{}{
+		"is_pinned": isPinned,
+	}
+
+	if isPinned {
+		now := time.Now()
+		updates["pinned_at"] = &now
+	} else {
+		updates["pinned_at"] = nil
+	}
+
+	result := s.db.WithContext(ctx).
+		Model(&model.ConversationEntity{}).
+		Where("id = ?", uID).
+		Updates(updates)
+
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
+}
+
+func (s *PostgresStore) ListPinnedConversationsByUserID(ctx context.Context, userID uuid.UUID) ([]*model.Conversation, error) {
+	var entities []model.ConversationEntity
+
+	err := s.db.WithContext(ctx).
+		Where("user_id = ? AND is_pinned = ?", userID, true).
+		Order("pinned_at DESC").
+		Find(&entities).Error
+	if err != nil {
+		return nil, err
+	}
+
+	results := make([]*model.Conversation, len(entities))
+	for i, e := range entities {
+		results[i] = &model.Conversation{
+			ID:        e.ID,
+			UserID:    e.UserID,
+			Title:     e.Title,
+			Summary:   e.Summary,
+			LastMsgID: e.LastMsgID,
+			IsPinned:  e.IsPinned,
+			PinnedAt:  e.PinnedAt,
+		}
+	}
+	return results, nil
 }

@@ -324,3 +324,36 @@ func (s *Service) SetMessageFavoriteLabel(
 
 	return s.Store.SetMessageFavoriteLabel(ctx, messageID.String(), label)
 }
+
+func (s *Service) SetConversationPinned(
+	ctx context.Context,
+	userID uuid.UUID,
+	convID uuid.UUID,
+	isPinned bool,
+) error {
+	conv, err := s.Store.GetConversation(ctx, convID.String())
+	if err != nil {
+		return fmt.Errorf("conversation not found: %w", err)
+	}
+
+	if conv.UserID != userID {
+		return fmt.Errorf("access denied: user %s does not own conversation %s", userID, convID)
+	}
+
+	if err := s.Store.SetConversationPinned(ctx, convID.String(), isPinned); err != nil {
+		return fmt.Errorf("failed to update conversation pinned state: %w", err)
+	}
+
+	return nil
+}
+
+func (s *Service) ListPinnedConversations(
+	ctx context.Context,
+	userID uuid.UUID,
+) ([]*model.Conversation, error) {
+	convs, err := s.Store.ListPinnedConversationsByUserID(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list pinned conversations: %w", err)
+	}
+	return convs, nil
+}

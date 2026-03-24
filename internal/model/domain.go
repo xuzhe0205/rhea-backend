@@ -34,8 +34,10 @@ type Conversation struct {
 	Title            string     `json:"title"`
 	LastMsgID        *uuid.UUID `json:"last_msg_id"`
 	Summary          string     `json:"summary"`
-	CumulativeTokens int        `json:"cumulative_tokens"` // 累计消耗，用于触发 100w 警告
-	LastSummaryAt    time.Time  `json:"last_summary_at"`   // 记录上次总结的时间或消息位置
+	IsPinned         bool       `json:"is_pinned"`
+	PinnedAt         *time.Time `json:"pinned_at,omitempty"`
+	CumulativeTokens int        `json:"cumulative_tokens"`
+	LastSummaryAt    time.Time  `json:"last_summary_at"`
 }
 
 type User struct {

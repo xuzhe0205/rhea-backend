@@ -38,6 +38,10 @@ type patchFavoriteLabelRequest struct {
 	FavoriteLabel string `json:"favorite_label"`
 }
 
+type PatchConversationPinRequest struct {
+	IsPinned bool `json:"is_pinned"`
+}
+
 func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -469,4 +473,83 @@ func (h *ChatHandler) PatchMessageFavoriteLabel(w http.ResponseWriter, r *http.R
 		"favorite_label": labelPtr,
 		"updated":        true,
 	})
+}
+
+func (h *ChatHandler) PatchConversationPin(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPatch {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	userID, ok := auth.GetUserID(r.Context())
+	if !ok {
+		http.Error(w, "Unauthorized: User not found in context", http.StatusUnauthorized)
+		return
+	}
+
+	convIDStr := r.PathValue("id")
+	if convIDStr == "" {
+		http.Error(w, "missing conversation id", http.StatusBadRequest)
+		return
+	}
+
+	convID, err := uuid.Parse(convIDStr)
+	if err != nil {
+		http.Error(w, "invalid conversation id format", http.StatusBadRequest)
+		return
+	}
+
+	var req PatchConversationPinRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad request: invalid JSON body", http.StatusBadRequest)
+		return
+	}
+
+	if err := h.Agent.SetConversationPinned(r.Context(), userID, convID, req.IsPinned); err != nil {
+		if strings.Contains(err.Error(), "access denied") {
+			http.Error(w, err.Error(), http.StatusForbidden)
+			return
+		}
+		if strings.Contains(err.Error(), "not found") {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		http.Error(w, "failed to update conversation pin state: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	resp := map[string]interface{}{
+		"conversation_id": convID,
+		"is_pinned":       req.IsPinned,
+		"updated":         true,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func (h *ChatHandler) ListPinnedConversations(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	userID, ok := auth.GetUserID(r.Context())
+	if !ok {
+		http.Error(w, "Unauthorized: User not found in context", http.StatusUnauthorized)
+		return
+	}
+
+	convs, err := h.Agent.ListPinnedConversations(r.Context(), userID)
+	if err != nil {
+		http.Error(w, "failed to list pinned conversations: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if convs == nil {
+		convs = []*model.Conversation{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(convs)
 }
