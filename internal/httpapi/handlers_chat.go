@@ -42,6 +42,13 @@ type PatchConversationPinRequest struct {
 	IsPinned bool `json:"is_pinned"`
 }
 
+type conversationResponse struct {
+	ID               string `json:"id"`
+	Title            string `json:"title"`
+	CumulativeTokens int    `json:"cumulative_tokens"`
+	IsPinned         bool   `json:"is_pinned"`
+}
+
 func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -201,42 +208,45 @@ func (h *ChatHandler) ListConversationMessages(w http.ResponseWriter, r *http.Re
 	_ = json.NewEncoder(w).Encode(msgs)
 }
 
-// GetConversationTokenSum 处理 GET /v1/conversations/{id}/token-sum
-func (h *ChatHandler) GetConversationTokenSum(w http.ResponseWriter, r *http.Request) {
-	// 1. 提取 UserID (安全第一)
+// GetConversation 处理 GET /v1/conversations/{id}
+func (h *ChatHandler) GetConversation(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
 	userID, ok := auth.GetUserID(r.Context())
 	if !ok {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
 
-	// 2. 提取路径参数 id
 	convIDStr := r.PathValue("id")
 	if convIDStr == "" {
 		http.Error(w, "missing conversation id", http.StatusBadRequest)
 		return
 	}
 
-	// 3. 调用 Service 获取数据
-	// 注意：我们可以直接重用 GetConversation，或者专门写一个轻量方法
 	conv, err := h.Agent.GetConversation(r.Context(), convIDStr)
 	if err != nil {
 		http.Error(w, "Conversation not found", http.StatusNotFound)
 		return
 	}
 
-	// 4. 权限检查：防止 A 用户查询 B 用户的 Token
 	if conv.UserID != userID {
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
 
-	// 5. 返回结果
+	resp := conversationResponse{
+		ID:               conv.ID.String(),
+		Title:            conv.Title,
+		CumulativeTokens: conv.CumulativeTokens,
+		IsPinned:         conv.IsPinned,
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"conversation_id": conv.ID,
-		"token_sum":       conv.CumulativeTokens,
-	})
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func (h *ChatHandler) PatchMessageFavorite(w http.ResponseWriter, r *http.Request) {

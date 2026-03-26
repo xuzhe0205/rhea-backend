@@ -52,6 +52,7 @@ func (s *Service) ChatStream(
 			return "", err
 		}
 		conversationID = newID.String()
+		s.handleTitleGeneration(conversationID, userText)
 	}
 
 	// 2) 获取当前对话状态（拿到最新的 LastMsgID 作为父节点）
@@ -156,9 +157,9 @@ func (s *Service) ChatStream(
 	}
 
 	// 7) 新对话异步标题生成
-	if isNewConversation {
-		s.handleTitleGeneration(conversationID, userText)
-	}
+	// if isNewConversation {
+	// 	s.handleTitleGeneration(conversationID, userText)
+	// }
 
 	// 8) assistant 回复落库
 	persistCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
