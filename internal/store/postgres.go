@@ -21,6 +21,8 @@ func InitDB(dsn string) (*gorm.DB, error) {
 		&model.ConversationEntity{},
 		&model.MessageEntity{},
 		&model.AnnotationEntity{},
+		&model.CommentEntity{},
+		&model.CommentThreadEntity{},
 	)
 	if err != nil {
 		return nil, err

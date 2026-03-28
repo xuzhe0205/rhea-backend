@@ -110,6 +110,9 @@ func main() {
 	// 2. 初始化 Annotation HTTP 处理器
 	annotationHandler := &httpapi.AnnotationHandler{AnnSvc: annSvc}
 
+	commentSvc := service.NewCommentService(st)
+	commentHandler := &httpapi.CommentHandler{CommentSvc: commentSvc}
+
 	// 健康检查
 	s.Handle("GET /health", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -149,6 +152,12 @@ func main() {
 	s.Handle("GET /v1/conversations/{id}/annotations", protectedChain(http.HandlerFunc(annotationHandler.ListByConversation)))
 	s.Handle("DELETE /v1/annotations/{id}", protectedChain(http.HandlerFunc(annotationHandler.Delete)))
 	s.Handle("POST /v1/annotations/remove-highlight", protectedChain(http.HandlerFunc(annotationHandler.RemoveHighlightRange)))
+
+	s.Handle("GET /v1/comments/thread", protectedChain(http.HandlerFunc(commentHandler.GetCommentThread)))
+	s.Handle("POST /v1/comments", protectedChain(http.HandlerFunc(commentHandler.AddComment)))
+	s.Handle("GET /v1/comments/{id}", protectedChain(http.HandlerFunc(commentHandler.GetComment)))
+	s.Handle("DELETE /v1/comments/{id}", protectedChain(http.HandlerFunc(commentHandler.DeleteComment)))
+	s.Handle("GET /v1/comment-threads", protectedChain(http.HandlerFunc(commentHandler.ListByMessageIDs)))
 
 	handlerWithCORS := middleware.CORS(s.Handler())
 

@@ -100,3 +100,47 @@ type FavoriteMessageRow struct {
 	FavoritedAt   *time.Time `json:"favoritedAt"`
 	FavoriteLabel *string    `json:"favorite_label,omitempty"`
 }
+
+type CommentThread struct {
+	ID                   uuid.UUID  `json:"id"`
+	MessageID            uuid.UUID  `json:"message_id"`
+	ConvID               uuid.UUID  `json:"conv_id"`
+	UserID               uuid.UUID  `json:"user_id"`
+	RangeStart           int        `json:"range_start"`
+	RangeEnd             int        `json:"range_end"`
+	SelectedTextSnapshot string     `json:"selected_text_snapshot"`
+	CreatedAt            time.Time  `json:"created_at"`
+	UpdatedAt            time.Time  `json:"updated_at"`
+	Comments             []*Comment `json:"comments,omitempty"`
+}
+
+type Comment struct {
+	ID        uuid.UUID  `json:"id"`
+	ThreadID  uuid.UUID  `json:"thread_id"`
+	MessageID uuid.UUID  `json:"message_id"`
+	ConvID    uuid.UUID  `json:"conv_id"`
+	UserID    uuid.UUID  `json:"user_id"`
+	Content   string     `json:"content"`
+	CreatedAt time.Time  `json:"created_at"`
+	UpdatedAt time.Time  `json:"updated_at"`
+	DeletedAt *time.Time `json:"deleted_at,omitempty"`
+}
+
+type GetCommentThreadRequest struct {
+	MessageID  uuid.UUID `json:"message_id"`
+	RangeStart int       `json:"range_start"`
+	RangeEnd   int       `json:"range_end"`
+}
+
+type AddCommentRequest struct {
+	MessageID            uuid.UUID `json:"message_id"`
+	ConvID               uuid.UUID `json:"conv_id"`
+	RangeStart           int       `json:"range_start"`
+	RangeEnd             int       `json:"range_end"`
+	SelectedTextSnapshot string    `json:"selected_text_snapshot"`
+	Content              string    `json:"content"`
+}
+
+type ListCommentThreadsByMessageIDsRequest struct {
+	MessageIDs []uuid.UUID `json:"message_ids"`
+}

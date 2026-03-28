@@ -68,4 +68,18 @@ type Store interface {
 	ListAnnotationsByMessageIDAndType(ctx context.Context, msgID uuid.UUID, userID uuid.UUID, annType model.AnnotationType) ([]*model.Annotation, error)
 
 	DeleteAnnotationsByIDs(ctx context.Context, ids []uuid.UUID, userID uuid.UUID) error
+
+	// --- Comment Thread / Comment 相关 ---
+
+	CreateCommentThread(ctx context.Context, thread *model.CommentThread) error
+	GetCommentThreadByRange(ctx context.Context, msgID uuid.UUID, userID uuid.UUID, start, end int) (*model.CommentThread, error)
+	GetCommentThreadByID(ctx context.Context, threadID uuid.UUID, userID uuid.UUID) (*model.CommentThread, error)
+	DeleteCommentThread(ctx context.Context, threadID uuid.UUID, userID uuid.UUID) error
+
+	CreateComment(ctx context.Context, comment *model.Comment) error
+	GetCommentByID(ctx context.Context, commentID uuid.UUID, userID uuid.UUID) (*model.Comment, error)
+	ListCommentsByThreadID(ctx context.Context, threadID uuid.UUID, userID uuid.UUID) ([]*model.Comment, error)
+	DeleteComment(ctx context.Context, commentID uuid.UUID, userID uuid.UUID) error
+	CountCommentsByThreadID(ctx context.Context, threadID uuid.UUID, userID uuid.UUID) (int64, error)
+	ListCommentThreadsByMessageIDs(ctx context.Context, userID uuid.UUID, messageIDs []uuid.UUID) ([]*model.CommentThread, error)
 }
