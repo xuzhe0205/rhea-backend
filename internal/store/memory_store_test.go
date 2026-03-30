@@ -69,20 +69,27 @@ func TestMemoryStore_UpdateConversationStatus_Atomic(t *testing.T) {
 		t.Errorf("Expected total 250 (100+150), got %d", total)
 	}
 
-	// 4. 验证乐观锁：如果传入错误的 parentID，应该报错（模拟并发冲突）
+	// 4. 现在不再做乐观锁冲突校验；即使 oldLastMsgID 不匹配，也会直接更新
 	wrongID := "some-random-id"
-	_, err = s.UpdateConversationStatus(ctx, convID, uuid.NewString(), &wrongID, 50)
-	if err == nil || err.Error() != "concurrent_conflict" {
-		t.Errorf("Expected concurrent_conflict error, got %v", err)
+	msgID3 := uuid.NewString()
+	total, err = s.UpdateConversationStatus(ctx, convID, msgID3, &wrongID, 50)
+	if err != nil {
+		t.Errorf("Expected no error on mismatched oldLastMsgID, got %v", err)
+	}
+	if total != 300 {
+		t.Errorf("Expected total 300 (100+150+50), got %d", total)
 	}
 
 	// 5. 验证最终存储的状态
-	conv, _ := s.GetConversation(ctx, convID)
-	if conv.CumulativeTokens != 250 {
+	conv, err := s.GetConversation(ctx, convID)
+	if err != nil || conv == nil {
+		t.Fatalf("GetConversation failed: err=%v conv=%v", err, conv)
+	}
+	if conv.CumulativeTokens != 300 {
 		t.Errorf("Final CumulativeTokens error, got %d", conv.CumulativeTokens)
 	}
-	if conv.LastMsgID.String() != msgID2 {
-		t.Errorf("Final LastMsgID error, got %s", conv.LastMsgID)
+	if conv.LastMsgID == nil || conv.LastMsgID.String() != msgID3 {
+		t.Errorf("Final LastMsgID error, got %v", conv.LastMsgID)
 	}
 }
 
@@ -107,7 +114,17 @@ func TestMemoryStore_IncrementTokenUsage(t *testing.T) {
 func TestMemoryStore_GetMessagesByConvID(t *testing.T) {
 	s := NewMemoryStore()
 	ctx := context.Background()
-	conv := "c1"
+
+	convID := uuid.New()
+	conv := convID.String()
+	_, err := s.CreateConversation(ctx, &model.Conversation{
+		ID:     convID,
+		UserID: uuid.New(),
+		Title:  "test",
+	})
+	if err != nil {
+		t.Fatalf("CreateConversation failed: %v", err)
+	}
 
 	msgs := []model.Message{
 		{Role: model.RoleUser, Content: "1"},
@@ -117,16 +134,16 @@ func TestMemoryStore_GetMessagesByConvID(t *testing.T) {
 	}
 
 	for _, m := range msgs {
-		_, _ = s.AppendMessage(ctx, conv, nil, m, nil)
+		_, err := s.AppendMessage(ctx, conv, nil, m, nil)
+		if err != nil {
+			t.Fatalf("AppendMessage failed: %v", err)
+		}
 	}
 
-	// 注意：你的 MemoryStore 实现里 DESC 是最新的在前面
-	// 如果 limit 2，应该是 4 和 3
 	got, err := s.GetMessagesByConvID(ctx, conv, 2, "desc", "")
 	if err != nil {
 		t.Fatalf("GetMessagesByConvID error: %v", err)
 	}
-	// 根据你的 memory_store 实现逻辑，desc 且 limit 2 拿到的应该是最后插入的两条
 	if len(got) != 2 || got[0].Content != "4" || got[1].Content != "3" {
 		t.Fatalf("unexpected messages: %v", got)
 	}
@@ -135,7 +152,17 @@ func TestMemoryStore_GetMessagesByConvID(t *testing.T) {
 func TestMemoryStore_GetMessagesByConvID_all(t *testing.T) {
 	s := NewMemoryStore()
 	ctx := context.Background()
-	conv := "c1"
+
+	convID := uuid.New()
+	conv := convID.String()
+	_, err := s.CreateConversation(ctx, &model.Conversation{
+		ID:     convID,
+		UserID: uuid.New(),
+		Title:  "test",
+	})
+	if err != nil {
+		t.Fatalf("CreateConversation failed: %v", err)
+	}
 
 	msgs := []model.Message{
 		{Role: model.RoleUser, Content: "1"},
@@ -143,7 +170,10 @@ func TestMemoryStore_GetMessagesByConvID_all(t *testing.T) {
 	}
 
 	for _, m := range msgs {
-		_, _ = s.AppendMessage(ctx, conv, nil, m, nil)
+		_, err := s.AppendMessage(ctx, conv, nil, m, nil)
+		if err != nil {
+			t.Fatalf("AppendMessage failed: %v", err)
+		}
 	}
 
 	got, err := s.GetMessagesByConvID(ctx, conv, 0, "asc", "")

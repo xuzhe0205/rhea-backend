@@ -17,20 +17,16 @@ import (
 )
 
 func TestServiceStream_FailoverAndTokenAccounting(t *testing.T) {
-	// 1. 环境准备
 	uid := uuid.New()
 	ctx := auth.SetUserID(context.Background(), uid)
 	st := store.NewMemoryStore()
 
-	// 2. 模拟场景：Free Tier 报 429 错误，Paid Tier 成功补位
-	// 第一个：免费版，返回 429 错误
 	pFreeFail := &llm.FakeProvider{
 		ProviderName: llm.ProviderGemini,
 		Model:        "flash-free-v3",
 		Err:          fmt.Errorf("429 RESOURCE_EXHAUSTED: quota exceeded"),
 	}
 
-	// 第二个：付费版，成功并返回 Token 消耗 (40 + 60 = 100)
 	pPaidSuccess := &llm.FakeProvider{
 		ProviderName: llm.ProviderGemini,
 		Model:        "flash-paid-v3",
@@ -43,7 +39,6 @@ func TestServiceStream_FailoverAndTokenAccounting(t *testing.T) {
 	}
 
 	r := &router.Router{
-		// 🚀 关键修复：将 Lite 的消耗设为 0，避免干扰最终 CumulativeTokens 的断言
 		GeminiLite: &llm.FakeProvider{
 			Reply: "SIMPLE",
 			Usage: &llm.Usage{InputTokens: 0, OutputTokens: 0},
@@ -60,52 +55,84 @@ func TestServiceStream_FailoverAndTokenAccounting(t *testing.T) {
 	}
 
 	var emittedParts []string
-	emit := func(delta string) error {
-		emittedParts = append(emittedParts, delta)
-		return nil
+	var metaEvents []map[string]any
+
+	cb := StreamCallbacks{
+		OnDelta: func(delta string) error {
+			emittedParts = append(emittedParts, delta)
+			return nil
+		},
+		OnMeta: func(payload map[string]any) error {
+			// copy 一份，避免后续引用同一 map
+			cp := make(map[string]any, len(payload))
+			for k, v := range payload {
+				cp[k] = v
+			}
+			metaEvents = append(metaEvents, cp)
+			return nil
+		},
 	}
 
-	// 3. 执行：由于是 SIMPLE 意图，会进入 Free -> Paid 链路
-	convID, err := svc.ChatStream(ctx, "", "Can you hear me?", emit)
+	convID, err := svc.ChatStream(ctx, "", "Can you hear me?", cb)
 	if err != nil {
 		t.Fatalf("ChatStream failed despite failover: %v", err)
 	}
 
-	// 4. 断言：验证元数据和内容
-	foundPaidMetadata := false
-	fullResponse := ""
-	for _, p := range emittedParts {
-		if strings.Contains(p, "flash-paid-v3") {
-			foundPaidMetadata = true
-		}
-		if !strings.HasPrefix(p, "::__metadata__:") {
-			fullResponse += p
-		}
-	}
-
-	if !foundPaidMetadata {
-		t.Error("Metadata for the PAID provider was not emitted after failover")
-	}
+	fullResponse := strings.Join(emittedParts, "")
 	if fullResponse != "I am the paid backup, and I work!" {
 		t.Errorf("Unexpected response content: %s", fullResponse)
 	}
 
-	// 5. 🚀 关键断言：验证 Token 统计 (应精确等于 100)
-	conv, _ := st.GetConversation(ctx, convID)
+	if len(metaEvents) < 2 {
+		t.Fatalf("expected at least 2 meta events, got %d", len(metaEvents))
+	}
+
+	// 第一段 meta：conversation_id + user_message_id
+	firstMeta := metaEvents[0]
+	if firstMeta["conversation_id"] != convID {
+		t.Errorf("first meta conversation_id mismatch: expected %s, got %v", convID, firstMeta["conversation_id"])
+	}
+	if _, ok := firstMeta["user_message_id"].(string); !ok {
+		t.Errorf("first meta missing user_message_id: %+v", firstMeta)
+	}
+
+	// 第二段 meta：conversation_id + assistant_message_id (+ optional title)
+	foundAssistantMeta := false
+	for _, m := range metaEvents {
+		if m["conversation_id"] == convID {
+			if _, ok := m["assistant_message_id"].(string); ok {
+				foundAssistantMeta = true
+				break
+			}
+		}
+	}
+	if !foundAssistantMeta {
+		t.Error("assistant_message_id metadata was not emitted")
+	}
+
+	conv, err := st.GetConversation(ctx, convID)
+	if err != nil {
+		t.Fatalf("GetConversation failed: %v", err)
+	}
+
 	expectedMainReplyTokens := 40 + 60
-	expectedTitleTokens := 100 // or whatever your fake internal-task provider returns
+	expectedTitleTokens := 100
 	expectedTotal := expectedMainReplyTokens + expectedTitleTokens
 
 	if conv.CumulativeTokens != expectedTotal {
 		t.Errorf("Token accounting failed: expected %d, got %d", expectedTotal, conv.CumulativeTokens)
 	}
 
-	// 6. 验证消息详情持久化
-	msgs, _ := st.GetMessagesByConvID(ctx, convID, 10, "asc", "")
+	msgs, err := st.GetMessagesByConvID(ctx, convID, 10, "asc", "")
+	if err != nil {
+		t.Fatalf("GetMessagesByConvID failed: %v", err)
+	}
+
 	var assistantMsg *model.Message
 	for _, m := range msgs {
 		if m.Role == model.RoleAssistant {
-			assistantMsg = &m
+			msgCopy := m
+			assistantMsg = &msgCopy
 			break
 		}
 	}
@@ -114,7 +141,11 @@ func TestServiceStream_FailoverAndTokenAccounting(t *testing.T) {
 		t.Fatal("Assistant message was not persisted")
 	}
 	if assistantMsg.InputTokens != 40 || assistantMsg.OutputTokens != 60 {
-		t.Errorf("Message-level tokens error: got %d/%d, expected 40/60", assistantMsg.InputTokens, assistantMsg.OutputTokens)
+		t.Errorf(
+			"Message-level tokens error: got %d/%d, expected 40/60",
+			assistantMsg.InputTokens,
+			assistantMsg.OutputTokens,
+		)
 	}
 }
 
@@ -123,7 +154,6 @@ func TestServiceStream_UserMessagePersistence(t *testing.T) {
 	ctx := auth.SetUserID(context.Background(), uid)
 	st := store.NewMemoryStore()
 
-	// 全部失败的情况
 	pFatal := &llm.FakeProvider{Err: fmt.Errorf("network unreachable")}
 	r := &router.Router{
 		GeminiLite:      &llm.FakeProvider{Reply: "DEEP", Usage: &llm.Usage{}},
@@ -134,22 +164,32 @@ func TestServiceStream_UserMessagePersistence(t *testing.T) {
 
 	svc := &Service{
 		Store:   st,
-		Builder: &ctxbuilder.Builder{Store: st},
+		Builder: &ctxbuilder.Builder{Store: st, SystemPrompt: "Hi"},
 		Router:  r,
 	}
 
-	convID, err := svc.ChatStream(ctx, "", "Persistence test", func(string) error { return nil })
+	cb := StreamCallbacks{
+		OnDelta: func(string) error { return nil },
+		OnMeta:  func(map[string]any) error { return nil },
+	}
+
+	convID, err := svc.ChatStream(ctx, "", "Persistence test", cb)
 	if err == nil {
 		t.Fatal("Expected error, got nil")
 	}
 
-	// 用户消息即使在 AI 崩溃时也应持久化
-	msgs, _ := st.GetMessagesByConvID(ctx, convID, 10, "asc", "")
+	msgs, err := st.GetMessagesByConvID(ctx, convID, 10, "asc", "")
+	if err != nil {
+		t.Fatalf("GetMessagesByConvID failed: %v", err)
+	}
 	if len(msgs) == 0 || msgs[0].Role != model.RoleUser {
-		t.Error("User message should be persisted even if AI fails")
+		t.Fatalf("User message should be persisted even if AI fails, got msgs=%+v", msgs)
 	}
 
-	conv, _ := st.GetConversation(ctx, convID)
+	conv, err := st.GetConversation(ctx, convID)
+	if err != nil || conv == nil {
+		t.Fatalf("conversation should exist even on AI failure, err=%v conv=%v", err, conv)
+	}
 	if conv.CumulativeTokens != 0 {
 		t.Errorf("Tokens should be 0 on total failure, got %d", conv.CumulativeTokens)
 	}

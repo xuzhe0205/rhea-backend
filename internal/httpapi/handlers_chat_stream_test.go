@@ -57,9 +57,18 @@ func TestChatStreamHandler_OK_StreamsMetadataAndDeltas(t *testing.T) {
 
 	out := w.Body.String()
 
-	// 4. 验证是否发送了模型元数据 (我们之前在 Service 增加的逻辑)
-	if !strings.Contains(out, "event: delta\ndata: ::__metadata__:model:gemini:fake-model-v1::") {
-		t.Errorf("expected metadata event, got: %q", out)
+	// 4. 验证是否发送了 meta 事件
+	if !strings.Contains(out, "event: meta\n") {
+		t.Fatalf("expected meta event, got: %q", out)
+	}
+	if !strings.Contains(out, `"conversation_id":"`) {
+		t.Fatalf("expected conversation_id in meta payload, got: %q", out)
+	}
+	if !strings.Contains(out, `"user_message_id":"`) {
+		t.Fatalf("expected user_message_id in meta payload, got: %q", out)
+	}
+	if !strings.Contains(out, `"assistant_message_id":"`) {
+		t.Fatalf("expected assistant_message_id in meta payload, got: %q", out)
 	}
 
 	// 5. 验证内容增量

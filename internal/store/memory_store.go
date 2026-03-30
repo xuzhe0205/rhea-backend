@@ -3,7 +3,7 @@ Class memory_store's responsibilities:
 - Actually storing data
 - Preventing concurrent race conditions
 - Returning cloned slices to prevent mutation bugs
-- Generating a message ID (string) to match PostgresStore behavior
+- Generating IDs to match PostgresStore behavior
 */
 
 package store
@@ -21,10 +21,12 @@ import (
 )
 
 type memoryMsg struct {
-	ID       string
-	ParentID *string
-	Msg      model.Message
-	Metadata map[string]interface{}
+	ID             string
+	ConversationID string
+	ParentID       *string
+	Msg            model.Message
+	Metadata       map[string]interface{}
+	FavoritedAt    *time.Time
 }
 
 type memoryConv struct {
@@ -32,36 +34,46 @@ type memoryConv struct {
 	UserID    uuid.UUID
 	Title     string
 	LastMsgID *uuid.UUID
-	TokenSum  int    // 👈 存放在这里，因为 domain model 里没有
-	Summary   string // 👈 存放在这里
+	TokenSum  int
+	Summary   string
 	UpdatedAt time.Time
+	IsPinned  bool
+	PinnedAt  *time.Time
 }
 
-// 1. 在 MemoryStore 结构体中增加 annotations map
+type memoryCommentThread struct {
+	Thread model.CommentThread
+}
+
+type memoryComment struct {
+	Comment model.Comment
+}
+
 type MemoryStore struct {
-	mu            sync.RWMutex
-	messages      map[string][]memoryMsg
-	conversations map[string]*memoryConv
-	summary       map[string]string
-	users         map[string]*model.User
-	// 新增：key 为 annotation 的 ID 字符串
-	annotations map[string]*model.Annotation
+	mu sync.RWMutex
+
+	messages      map[string][]memoryMsg // convID -> msgs (ASC by append order)
+	conversations map[string]*memoryConv // convID -> conv
+	summary       map[string]string      // convID -> summary
+	users         map[string]*model.User // email -> user
+
+	annotations    map[string]*model.Annotation    // annID -> ann
+	commentThreads map[string]*model.CommentThread // threadID -> thread
+	comments       map[string]*model.Comment       // commentID -> comment
 }
 
-// 2. 在 NewMemoryStore 中初始化 map
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
-		messages:      make(map[string][]memoryMsg),
-		conversations: make(map[string]*memoryConv),
-		summary:       make(map[string]string),
-		users:         make(map[string]*model.User),
-		annotations:   make(map[string]*model.Annotation), // 👈 初始化
+		messages:       make(map[string][]memoryMsg),
+		conversations:  make(map[string]*memoryConv),
+		summary:        make(map[string]string),
+		users:          make(map[string]*model.User),
+		annotations:    make(map[string]*model.Annotation),
+		commentThreads: make(map[string]*model.CommentThread),
+		comments:       make(map[string]*model.Comment),
 	}
 }
 
-// AppendMessage implements store.Store.
-// parentID can be nil to represent a root message.
-// metadata can be nil.
 func (s *MemoryStore) AppendMessage(
 	ctx context.Context,
 	conversationID string,
@@ -69,16 +81,21 @@ func (s *MemoryStore) AppendMessage(
 	msg model.Message,
 	metadata map[string]interface{},
 ) (string, error) {
-	_ = ctx // currently unused, kept to match interface
+	_ = ctx
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if _, ok := s.conversations[conversationID]; !ok {
+		return "", fmt.Errorf("conversation not found")
+	}
+
 	id := uuid.NewString()
+	now := time.Now()
 
 	var parentCopy *string
-	if parentID != nil {
-		p := *parentID // copy value
+	if parentID != nil && *parentID != "" {
+		p := *parentID
 		parentCopy = &p
 	}
 
@@ -87,60 +104,58 @@ func (s *MemoryStore) AppendMessage(
 		metaCopy = cloneMetadata(metadata)
 	}
 
+	msgCopy := cloneMessage(msg)
+	parsedID, _ := uuid.Parse(id)
+	convUUID, _ := uuid.Parse(conversationID)
+
+	msgCopy.ID = parsedID
+	msgCopy.ConvID = convUUID
+	msgCopy.CreatedAt = now
+	msgCopy.Metadata = metaCopy
+
 	s.messages[conversationID] = append(s.messages[conversationID], memoryMsg{
-		ID:       id,
-		ParentID: parentCopy,
-		Msg:      msg,
-		Metadata: metaCopy,
+		ID:             id,
+		ConversationID: conversationID,
+		ParentID:       parentCopy,
+		Msg:            msgCopy,
+		Metadata:       metaCopy,
 	})
 
 	return id, nil
 }
 
-// func (s *MemoryStore) GetRecentMessages(ctx context.Context, conversationID string, limit int) ([]model.Message, error) {
-// 	_ = ctx
+func (s *MemoryStore) GetMessagesByConvID(
+	ctx context.Context,
+	conversationID string,
+	limit int,
+	order string,
+	beforeID string,
+) ([]model.Message, error) {
+	_ = ctx
 
-// 	s.mu.RLock()
-// 	defer s.mu.RUnlock()
-
-// 	all := s.messages[conversationID]
-// 	if limit <= 0 || len(all) <= limit {
-// 		return cloneMsgs(extractMsgs(all)), nil
-// 	}
-
-// 	return cloneMsgs(extractMsgs(all[len(all)-limit:])), nil
-// }
-
-// GetMessagesByConvID 统一了 LLM 取上下文和 UI 取历史记录的逻辑
-func (s *MemoryStore) GetMessagesByConvID(ctx context.Context, conversationID string, limit int, order string, beforeID string) ([]model.Message, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	// 1. 获取该对话的所有原始消息
 	rawMsgs, ok := s.messages[conversationID]
 	if !ok {
 		return []model.Message{}, nil
 	}
 
-	// 2. 拷贝一份用于处理，避免并发读写冲突
 	temp := make([]memoryMsg, len(rawMsgs))
 	copy(temp, rawMsgs)
 
-	// 3. 模拟数据库的“初始状态”：由于 Append 是顺序的，temp 现在是 ASC
-	// 但为了模拟 Postgres 的逻辑（最新的在前才能 Limit），我们先统一转成 DESC
-	for i, j := 0, len(temp)-1; i < j; i, j = i+1, j-1 {
-		temp[i], temp[j] = temp[j], temp[i]
-	}
+	// Match Postgres default query ordering: newest first
+	reverseMemoryMsgs(temp)
 
-	// 4. 处理 beforeID 游标过滤 (Cursor)
 	var filtered []memoryMsg
 	if beforeID != "" {
 		foundCursor := false
 		for i, m := range temp {
 			if m.ID == beforeID {
-				// 找到了作为游标的消息，取它之后的所有消息（即比它更旧的消息）
 				if i+1 < len(temp) {
 					filtered = temp[i+1:]
+				} else {
+					filtered = []memoryMsg{}
 				}
 				foundCursor = true
 				break
@@ -153,7 +168,6 @@ func (s *MemoryStore) GetMessagesByConvID(ctx context.Context, conversationID st
 		filtered = temp
 	}
 
-	// 5. 处理 Limit
 	var limited []memoryMsg
 	if limit > 0 && len(filtered) > limit {
 		limited = filtered[:limit]
@@ -161,11 +175,8 @@ func (s *MemoryStore) GetMessagesByConvID(ctx context.Context, conversationID st
 		limited = filtered
 	}
 
-	// 6. 转换回 Domain Model
-	msgs := extractMsgs(limited)
+	msgs := extractDomainMsgs(limited)
 
-	// 7. 处理最终排序：如果要求 asc (UI/LLM 需要)，则再次反转
-	// 因为 limited 现在是 [新...旧]
 	if order == "asc" {
 		for i, j := 0, len(msgs)-1; i < j; i, j = i+1, j-1 {
 			msgs[i], msgs[j] = msgs[j], msgs[i]
@@ -175,31 +186,209 @@ func (s *MemoryStore) GetMessagesByConvID(ctx context.Context, conversationID st
 	return msgs, nil
 }
 
-func (s *MemoryStore) CreateConversation(ctx context.Context, conv *model.Conversation) (string, error) {
+func (s *MemoryStore) GetMessagesForFavoriteJump(
+	ctx context.Context,
+	conversationID string,
+	messageID string,
+	olderBuffer int,
+) ([]model.Message, error) {
+	_ = ctx
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rawMsgs, ok := s.messages[conversationID]
+	if !ok {
+		return nil, fmt.Errorf("conversation not found")
+	}
+
+	anchorIdx := -1
+	for i, m := range rawMsgs {
+		if m.ID == messageID {
+			anchorIdx = i
+			break
+		}
+	}
+	if anchorIdx == -1 {
+		return nil, fmt.Errorf("favorite message not found in conversation")
+	}
+
+	start := anchorIdx - olderBuffer
+	if start < 0 {
+		start = 0
+	}
+
+	combined := rawMsgs[start:]
+	return extractDomainMsgs(combined), nil
+}
+
+func (s *MemoryStore) SetMessageFavorite(
+	ctx context.Context,
+	messageID string,
+	isFavorite bool,
+) error {
+	_ = ctx
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// 1. 如果 Domain 对象里没有 ID，我们生成一个
+	for convID, msgs := range s.messages {
+		for i := range msgs {
+			if msgs[i].ID == messageID {
+				msgs[i].Msg.IsFavorite = isFavorite
+				if isFavorite {
+					now := time.Now()
+					msgs[i].FavoritedAt = &now
+				} else {
+					msgs[i].FavoritedAt = nil
+					msgs[i].Msg.FavoriteLabel = nil
+				}
+				s.messages[convID][i] = msgs[i]
+				return nil
+			}
+		}
+	}
+
+	return fmt.Errorf("message not found")
+}
+
+func (s *MemoryStore) ListFavoriteMessages(
+	ctx context.Context,
+	userID string,
+	limit int,
+	offset int,
+) ([]model.FavoriteMessageRow, error) {
+	_ = ctx
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	userUUID, err := uuid.Parse(userID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid user uuid: %w", err)
+	}
+
+	rows := make([]model.FavoriteMessageRow, 0)
+
+	for convID, conv := range s.conversations {
+		if conv.UserID != userUUID {
+			continue
+		}
+		msgs := s.messages[convID]
+		for _, mm := range msgs {
+			if mm.Msg.IsFavorite {
+				rows = append(rows, model.FavoriteMessageRow{
+					ID:            mm.Msg.ID,
+					ConvID:        mm.Msg.ConvID,
+					Role:          mm.Msg.Role,
+					Content:       mm.Msg.Content,
+					CreatedAt:     mm.Msg.CreatedAt,
+					FavoritedAt:   mm.FavoritedAt,
+					FavoriteLabel: mm.Msg.FavoriteLabel,
+				})
+			}
+		}
+	}
+
+	sort.Slice(rows, func(i, j int) bool {
+		var ti, tj time.Time
+		if rows[i].FavoritedAt != nil {
+			ti = *rows[i].FavoritedAt
+		}
+		if rows[j].FavoritedAt != nil {
+			tj = *rows[j].FavoritedAt
+		}
+		if !ti.Equal(tj) {
+			return ti.After(tj)
+		}
+		if !rows[i].CreatedAt.Equal(rows[j].CreatedAt) {
+			return rows[i].CreatedAt.After(rows[j].CreatedAt)
+		}
+		return rows[i].ID.String() > rows[j].ID.String()
+	})
+
+	if offset > 0 {
+		if offset >= len(rows) {
+			return []model.FavoriteMessageRow{}, nil
+		}
+		rows = rows[offset:]
+	}
+	if limit > 0 && len(rows) > limit {
+		rows = rows[:limit]
+	}
+
+	return rows, nil
+}
+
+func (s *MemoryStore) GetMessageByID(ctx context.Context, messageID string) (*model.Message, error) {
+	_ = ctx
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for _, msgs := range s.messages {
+		for _, mm := range msgs {
+			if mm.ID == messageID {
+				msg := cloneMessage(mm.Msg)
+				return &msg, nil
+			}
+		}
+	}
+
+	return nil, fmt.Errorf("message not found")
+}
+
+func (s *MemoryStore) SetMessageFavoriteLabel(
+	ctx context.Context,
+	messageID string,
+	label *string,
+) error {
+	_ = ctx
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for convID, msgs := range s.messages {
+		for i := range msgs {
+			if msgs[i].ID == messageID {
+				msgs[i].Msg.FavoriteLabel = cloneStringPtr(label)
+				s.messages[convID][i] = msgs[i]
+				return nil
+			}
+		}
+	}
+
+	return fmt.Errorf("message not found")
+}
+
+func (s *MemoryStore) CreateConversation(ctx context.Context, conv *model.Conversation) (string, error) {
+	_ = ctx
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	if conv.ID == uuid.Nil {
 		conv.ID = uuid.New()
 	}
 
-	// 2. 将 Domain 转换并存入内存实体 (memoryConv)
-	// 这样即便之后 conv 指针在外部被修改，也不会影响我们存好的数据
 	s.conversations[conv.ID.String()] = &memoryConv{
 		ID:        conv.ID,
 		UserID:    conv.UserID,
 		Title:     conv.Title,
-		LastMsgID: conv.LastMsgID,
+		LastMsgID: cloneUUIDPtr(conv.LastMsgID),
 		Summary:   conv.Summary,
-		TokenSum:  0,          // 初始 Token 为 0
-		UpdatedAt: time.Now(), // 记录创建/更新时间
+		TokenSum:  conv.CumulativeTokens,
+		UpdatedAt: time.Now(),
+		IsPinned:  conv.IsPinned,
+		PinnedAt:  cloneTimePtr(conv.PinnedAt),
 	}
 
 	return conv.ID.String(), nil
 }
 
 func (s *MemoryStore) GetConversation(ctx context.Context, id string) (*model.Conversation, error) {
+	_ = ctx
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -212,14 +401,24 @@ func (s *MemoryStore) GetConversation(ctx context.Context, id string) (*model.Co
 		ID:               mc.ID,
 		UserID:           mc.UserID,
 		Title:            mc.Title,
-		LastMsgID:        mc.LastMsgID,
+		LastMsgID:        cloneUUIDPtr(mc.LastMsgID),
 		Summary:          mc.Summary,
-		CumulativeTokens: mc.TokenSum, // 🚀 映射回 model
+		IsPinned:         mc.IsPinned,
+		PinnedAt:         cloneTimePtr(mc.PinnedAt),
+		CumulativeTokens: mc.TokenSum,
 	}, nil
 }
 
-// UpdateConversationStatus 实现：包含指针更新、Token 累加和乐观锁校验
-func (s *MemoryStore) UpdateConversationStatus(ctx context.Context, convID string, newLastMsgID string, expectedOldMsgID *string, tokenDelta int) (int, error) {
+// Match Postgres behavior: no optimistic-lock enforcement anymore.
+func (s *MemoryStore) UpdateConversationStatus(
+	ctx context.Context,
+	convID string,
+	newLastMsgID string,
+	_ *string,
+	tokenDelta int,
+) (int, error) {
+	_ = ctx
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -228,37 +427,153 @@ func (s *MemoryStore) UpdateConversationStatus(ctx context.Context, convID strin
 		return 0, fmt.Errorf("conversation not found: %s", convID)
 	}
 
-	// 乐观锁校验
-	if expectedOldMsgID != nil && *expectedOldMsgID != "" {
-		currentLastID := ""
-		if conv.LastMsgID != nil {
-			currentLastID = conv.LastMsgID.String()
-		}
-		if currentLastID != *expectedOldMsgID {
-			return 0, fmt.Errorf("concurrent_conflict") // 模拟 Postgres 冲突
-		}
-	} else if conv.LastMsgID != nil {
-		// 如果期望是 NULL 但实际不是，也算冲突
-		return 0, fmt.Errorf("concurrent_conflict")
+	uNewID, err := uuid.Parse(newLastMsgID)
+	if err != nil {
+		return 0, fmt.Errorf("invalid message id: %w", err)
 	}
 
-	uNewID, _ := uuid.Parse(newLastMsgID)
 	conv.LastMsgID = &uNewID
-	conv.TokenSum += tokenDelta // 🚀 原子累加
+	conv.TokenSum += tokenDelta
 	conv.UpdatedAt = time.Now()
 
-	return conv.TokenSum, nil // 🚀 返回最新总额
+	return conv.TokenSum, nil
+}
+
+func (s *MemoryStore) UpdateConversationTitle(ctx context.Context, convID string, title string) error {
+	_ = ctx
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	conv, ok := s.conversations[convID]
+	if !ok {
+		return fmt.Errorf("conversation not found: %s", convID)
+	}
+
+	conv.Title = title
+	conv.UpdatedAt = time.Now()
+	return nil
+}
+
+func (s *MemoryStore) ListConversationsByUserID(ctx context.Context, userID uuid.UUID) ([]*model.Conversation, error) {
+	_ = ctx
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var results []*memoryConv
+	for _, mc := range s.conversations {
+		if mc.UserID == userID {
+			results = append(results, mc)
+		}
+	}
+
+	sort.Slice(results, func(i, j int) bool {
+		if results[i].IsPinned != results[j].IsPinned {
+			return results[i].IsPinned && !results[j].IsPinned
+		}
+
+		if results[i].PinnedAt != nil || results[j].PinnedAt != nil {
+			if results[i].PinnedAt == nil {
+				return false
+			}
+			if results[j].PinnedAt == nil {
+				return true
+			}
+			if !results[i].PinnedAt.Equal(*results[j].PinnedAt) {
+				return results[i].PinnedAt.After(*results[j].PinnedAt)
+			}
+		}
+
+		return results[i].UpdatedAt.After(results[j].UpdatedAt)
+	})
+
+	out := make([]*model.Conversation, len(results))
+	for i, mc := range results {
+		out[i] = &model.Conversation{
+			ID:        mc.ID,
+			UserID:    mc.UserID,
+			Title:     mc.Title,
+			LastMsgID: cloneUUIDPtr(mc.LastMsgID),
+			Summary:   mc.Summary,
+			IsPinned:  mc.IsPinned,
+			PinnedAt:  cloneTimePtr(mc.PinnedAt),
+		}
+	}
+	return out, nil
 }
 
 func (s *MemoryStore) IncrementConversationTokenUsage(ctx context.Context, convID string, delta int) error {
+	_ = ctx
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
 	if conv, ok := s.conversations[convID]; ok {
 		conv.TokenSum += delta
 		conv.UpdatedAt = time.Now()
 		return nil
 	}
 	return fmt.Errorf("not found")
+}
+
+func (s *MemoryStore) ListPinnedConversationsByUserID(ctx context.Context, userID uuid.UUID) ([]*model.Conversation, error) {
+	_ = ctx
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var results []*memoryConv
+	for _, mc := range s.conversations {
+		if mc.UserID == userID && mc.IsPinned {
+			results = append(results, mc)
+		}
+	}
+
+	sort.Slice(results, func(i, j int) bool {
+		if results[i].PinnedAt == nil {
+			return false
+		}
+		if results[j].PinnedAt == nil {
+			return true
+		}
+		return results[i].PinnedAt.After(*results[j].PinnedAt)
+	})
+
+	out := make([]*model.Conversation, len(results))
+	for i, mc := range results {
+		out[i] = &model.Conversation{
+			ID:        mc.ID,
+			UserID:    mc.UserID,
+			Title:     mc.Title,
+			LastMsgID: cloneUUIDPtr(mc.LastMsgID),
+			Summary:   mc.Summary,
+			IsPinned:  mc.IsPinned,
+			PinnedAt:  cloneTimePtr(mc.PinnedAt),
+		}
+	}
+	return out, nil
+}
+
+func (s *MemoryStore) SetConversationPinned(ctx context.Context, convID string, isPinned bool) error {
+	_ = ctx
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	conv, ok := s.conversations[convID]
+	if !ok {
+		return fmt.Errorf("conversation not found")
+	}
+
+	conv.IsPinned = isPinned
+	if isPinned {
+		now := time.Now()
+		conv.PinnedAt = &now
+	} else {
+		conv.PinnedAt = nil
+	}
+	return nil
 }
 
 func (s *MemoryStore) GetSummary(ctx context.Context, conversationID string) (string, error) {
@@ -275,52 +590,35 @@ func (s *MemoryStore) SetSummary(ctx context.Context, conversationID string, sum
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.summary[conversationID] = summary
-	return nil
-}
-
-func (s *MemoryStore) UpdateConversationTitle(ctx context.Context, convID string, title string) error {
-	_ = ctx // 模拟接口
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	conv, ok := s.conversations[convID]
-	if !ok {
-		return fmt.Errorf("conversation not found: %s", convID)
+	if conv, ok := s.conversations[conversationID]; ok {
+		conv.Summary = summary
 	}
-
-	// 更新标题和时间戳
-	conv.Title = title
-	conv.UpdatedAt = time.Now()
-
 	return nil
 }
 
-// CreateUser 模拟数据库插入用户
 func (s *MemoryStore) CreateUser(ctx context.Context, user *model.User) (*model.User, error) {
+	_ = ctx
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// 模拟唯一索引校验
 	if _, exists := s.users[user.Email]; exists {
 		return nil, fmt.Errorf("user already exists: %s", user.Email)
 	}
-
-	// 生成 ID (如果还没有)
 	if user.ID == uuid.Nil {
 		user.ID = uuid.New()
 	}
 
-	// 存入内存
-	// 注意：这里建议存一份克隆，防止外部修改指针影响 Store
 	userCopy := *user
 	s.users[user.Email] = &userCopy
 
-	return user, nil
+	out := userCopy
+	return &out, nil
 }
 
-// GetUserByEmail 模拟数据库查询用户
 func (s *MemoryStore) GetUserByEmail(ctx context.Context, email string) (*model.User, error) {
+	_ = ctx
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -329,17 +627,16 @@ func (s *MemoryStore) GetUserByEmail(ctx context.Context, email string) (*model.
 		return nil, fmt.Errorf("user not found: %s", email)
 	}
 
-	// 返回克隆对象，防止外部直接修改哈希值等敏感数据
 	userCopy := *user
 	return &userCopy, nil
 }
 
-// GetUserByID 模拟数据库通过 ID 查询用户
 func (s *MemoryStore) GetUserByID(ctx context.Context, id uuid.UUID) (*model.User, error) {
+	_ = ctx
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	// 遍历 map 查找 ID 匹配的用户 (内存实现稍微笨一点，但也最直观)
 	for _, user := range s.users {
 		if user.ID == id {
 			userCopy := *user
@@ -350,154 +647,561 @@ func (s *MemoryStore) GetUserByID(ctx context.Context, id uuid.UUID) (*model.Use
 	return nil, fmt.Errorf("user not found with id: %s", id)
 }
 
-// ListConversationsByUserID 实现接口：获取特定用户的所有对话，按更新时间降序排列
-func (s *MemoryStore) ListConversationsByUserID(ctx context.Context, userID uuid.UUID) ([]*model.Conversation, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+// --------------------
+// Annotation methods
+// --------------------
 
-	var results []*memoryConv
-
-	// 1. 过滤属于该用户的对话
-	for _, mc := range s.conversations {
-		if mc.UserID == userID {
-			results = append(results, mc)
-		}
-	}
-
-	// 2. 模拟数据库的 Order By updated_at DESC
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].UpdatedAt.After(results[j].UpdatedAt)
-	})
-
-	// 3. 转换为 Domain Model 数组
-	finalResult := make([]*model.Conversation, len(results))
-	for i, mc := range results {
-		finalResult[i] = &model.Conversation{
-			ID:        mc.ID,
-			UserID:    mc.UserID,
-			Title:     mc.Title,
-			LastMsgID: mc.LastMsgID,
-			Summary:   mc.Summary,
-		}
-	}
-
-	return finalResult, nil
-}
-
-// --- 实现 Annotation (Rich Text) 接口 ---
-
-// SaveAnnotation 实现存储逻辑
 func (s *MemoryStore) SaveAnnotation(ctx context.Context, ann *model.Annotation) error {
+	_ = ctx
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if ann.ID == uuid.Nil {
 		ann.ID = uuid.New()
 	}
-
-	// 存储一份克隆，模拟数据库的持久化行为，防止外部指针修改
-	annCopy := *ann
-	s.annotations[ann.ID.String()] = &annCopy
+	annCopy := cloneAnnotation(ann)
+	s.annotations[ann.ID.String()] = annCopy
 	return nil
 }
 
-// GetAnnotationByFeature 模拟精确特征查找
-func (s *MemoryStore) GetAnnotationByFeature(ctx context.Context, msgID uuid.UUID, start, end int, annType model.AnnotationType) (*model.Annotation, error) {
+func (s *MemoryStore) GetAnnotationByFeature(
+	ctx context.Context,
+	msgID uuid.UUID,
+	start, end int,
+	annType model.AnnotationType,
+) (*model.Annotation, error) {
+	_ = ctx
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	for _, a := range s.annotations {
 		if a.MessageID == msgID && a.RangeStart == start && a.RangeEnd == end && a.Type == annType {
-			res := *a
-			return &res, nil
+			return cloneAnnotation(a), nil
 		}
 	}
-	return nil, fmt.Errorf("annotation not found") // 模拟 GORM 的 RecordNotFound
+
+	// Match Postgres behavior: not found returns nil, nil
+	return nil, nil
 }
 
-// DeleteAnnotationsByRangeAndTypes 模拟范围和类型的批量删除
-func (s *MemoryStore) DeleteAnnotationsByRangeAndTypes(ctx context.Context, msgID uuid.UUID, start, end int, types []model.AnnotationType) error {
+func (s *MemoryStore) DeleteAnnotationsByRangeAndTypes(
+	ctx context.Context,
+	msgID uuid.UUID,
+	start, end int,
+	types []model.AnnotationType,
+) error {
+	_ = ctx
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	typeMap := make(map[model.AnnotationType]bool)
+	typeSet := make(map[model.AnnotationType]struct{}, len(types))
 	for _, t := range types {
-		typeMap[t] = true
+		typeSet[t] = struct{}{}
 	}
 
 	for id, a := range s.annotations {
-		// 匹配逻辑：同一条消息 + 类型在列表中 + 范围完全一致 (或按需改为重叠)
-		// 这里采用完全一致逻辑，与 Service 层调用匹配
-		if a.MessageID == msgID && a.RangeStart == start && a.RangeEnd == end && typeMap[a.Type] {
-			delete(s.annotations, id)
+		if a.MessageID == msgID && a.RangeStart == start && a.RangeEnd == end {
+			if _, ok := typeSet[a.Type]; ok {
+				delete(s.annotations, id)
+			}
 		}
 	}
 	return nil
 }
 
-// DeleteAnnotation 模拟带权限校验的删除
 func (s *MemoryStore) DeleteAnnotation(ctx context.Context, id uuid.UUID, userID uuid.UUID) error {
+	_ = ctx
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	sid := id.String()
-	ann, ok := s.annotations[sid]
+	ann, ok := s.annotations[id.String()]
 	if !ok {
-		return nil // 模拟 Delete Ignore
+		return nil
 	}
-
-	// 模拟越权校验
 	if ann.UserID != userID {
 		return fmt.Errorf("permission denied")
 	}
 
-	delete(s.annotations, sid)
+	delete(s.annotations, id.String())
 	return nil
 }
 
-// ListAnnotationsByMessageID 模拟按消息拉取并排序
-func (s *MemoryStore) ListAnnotationsByMessageID(ctx context.Context, msgID uuid.UUID, userID uuid.UUID) ([]*model.Annotation, error) {
+func (s *MemoryStore) ListAnnotationsByMessageID(
+	ctx context.Context,
+	msgID uuid.UUID,
+	userID uuid.UUID,
+) ([]*model.Annotation, error) {
+	_ = ctx
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	var list []*model.Annotation
 	for _, a := range s.annotations {
-		// 增加 userID 过滤，确保只能看到自己的标注
 		if a.MessageID == msgID && a.UserID == userID {
-			copyAnn := *a
-			list = append(list, &copyAnn)
+			list = append(list, cloneAnnotation(a))
 		}
 	}
 
-	// 模拟数据库的 CreatedAt ASC 排序 (假设 ID 生成顺序或手动排序)
-	// 简单起见，这里按 RangeStart 排序，实际生产中应记录 CreatedAt
 	sort.Slice(list, func(i, j int) bool {
-		return list[i].RangeStart < list[j].RangeStart
+		if list[i].RangeStart != list[j].RangeStart {
+			return list[i].RangeStart < list[j].RangeStart
+		}
+		if list[i].RangeEnd != list[j].RangeEnd {
+			return list[i].RangeEnd < list[j].RangeEnd
+		}
+		return list[i].ID.String() < list[j].ID.String()
 	})
 
 	return list, nil
 }
 
-// --- helpers ---
+func (s *MemoryStore) ListAnnotationsByConversationAndMessageIDs(
+	ctx context.Context,
+	convID uuid.UUID,
+	userID uuid.UUID,
+	messageIDs []uuid.UUID,
+) ([]*model.Annotation, error) {
+	_ = ctx
 
-func extractMsgs(in []memoryMsg) []model.Message {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	msgSet := make(map[uuid.UUID]struct{}, len(messageIDs))
+	for _, id := range messageIDs {
+		msgSet[id] = struct{}{}
+	}
+
+	out := make([]*model.Annotation, 0)
+	for _, a := range s.annotations {
+		if a.ConvID != convID || a.UserID != userID {
+			continue
+		}
+		if len(messageIDs) > 0 {
+			if _, ok := msgSet[a.MessageID]; !ok {
+				continue
+			}
+		}
+		out = append(out, cloneAnnotation(a))
+	}
+
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].ID.String() < out[j].ID.String()
+	})
+
+	return out, nil
+}
+
+func (s *MemoryStore) ListAnnotationsByMessageIDAndType(
+	ctx context.Context,
+	msgID uuid.UUID,
+	userID uuid.UUID,
+	annType model.AnnotationType,
+) ([]*model.Annotation, error) {
+	_ = ctx
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := make([]*model.Annotation, 0)
+	for _, a := range s.annotations {
+		if a.MessageID == msgID && a.UserID == userID && a.Type == annType {
+			out = append(out, cloneAnnotation(a))
+		}
+	}
+
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].RangeStart != out[j].RangeStart {
+			return out[i].RangeStart < out[j].RangeStart
+		}
+		return out[i].ID.String() < out[j].ID.String()
+	})
+
+	return out, nil
+}
+
+func (s *MemoryStore) DeleteAnnotationsByIDs(
+	ctx context.Context,
+	ids []uuid.UUID,
+	userID uuid.UUID,
+) error {
+	_ = ctx
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, id := range ids {
+		if ann, ok := s.annotations[id.String()]; ok && ann.UserID == userID {
+			delete(s.annotations, id.String())
+		}
+	}
+	return nil
+}
+
+// --------------------
+// Comment thread methods
+// --------------------
+
+func (s *MemoryStore) CreateCommentThread(ctx context.Context, thread *model.CommentThread) error {
+	_ = ctx
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if thread.ID == uuid.Nil {
+		thread.ID = uuid.New()
+	}
+	now := time.Now()
+	if thread.CreatedAt.IsZero() {
+		thread.CreatedAt = now
+	}
+	if thread.UpdatedAt.IsZero() {
+		thread.UpdatedAt = now
+	}
+
+	threadCopy := cloneCommentThread(thread)
+	s.commentThreads[thread.ID.String()] = threadCopy
+	return nil
+}
+
+func (s *MemoryStore) GetCommentThreadByRange(
+	ctx context.Context,
+	msgID uuid.UUID,
+	userID uuid.UUID,
+	start, end int,
+) (*model.CommentThread, error) {
+	_ = ctx
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for _, t := range s.commentThreads {
+		if t.MessageID == msgID && t.UserID == userID && t.RangeStart == start && t.RangeEnd == end {
+			out := cloneCommentThread(t)
+			out.Comments = s.listCommentsByThreadIDLocked(t.ID, userID)
+			return out, nil
+		}
+	}
+
+	return nil, nil
+}
+
+func (s *MemoryStore) GetCommentThreadByID(
+	ctx context.Context,
+	threadID uuid.UUID,
+	userID uuid.UUID,
+) (*model.CommentThread, error) {
+	_ = ctx
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	t, ok := s.commentThreads[threadID.String()]
+	if !ok || t.UserID != userID {
+		return nil, nil
+	}
+
+	out := cloneCommentThread(t)
+	out.Comments = s.listCommentsByThreadIDLocked(threadID, userID)
+	return out, nil
+}
+
+func (s *MemoryStore) DeleteCommentThread(ctx context.Context, threadID uuid.UUID, userID uuid.UUID) error {
+	_ = ctx
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	t, ok := s.commentThreads[threadID.String()]
+	if !ok {
+		return nil
+	}
+	if t.UserID != userID {
+		return fmt.Errorf("permission denied")
+	}
+
+	delete(s.commentThreads, threadID.String())
+
+	for id, c := range s.comments {
+		if c.ThreadID == threadID && c.UserID == userID {
+			delete(s.comments, id)
+		}
+	}
+
+	return nil
+}
+
+func (s *MemoryStore) CreateComment(ctx context.Context, comment *model.Comment) error {
+	_ = ctx
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if comment.ID == uuid.Nil {
+		comment.ID = uuid.New()
+	}
+	now := time.Now()
+	if comment.CreatedAt.IsZero() {
+		comment.CreatedAt = now
+	}
+	if comment.UpdatedAt.IsZero() {
+		comment.UpdatedAt = now
+	}
+
+	commentCopy := cloneComment(comment)
+	s.comments[comment.ID.String()] = commentCopy
+
+	if thread, ok := s.commentThreads[comment.ThreadID.String()]; ok {
+		thread.UpdatedAt = now
+	}
+	return nil
+}
+
+func (s *MemoryStore) GetCommentByID(
+	ctx context.Context,
+	commentID uuid.UUID,
+	userID uuid.UUID,
+) (*model.Comment, error) {
+	_ = ctx
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	c, ok := s.comments[commentID.String()]
+	if !ok || c.UserID != userID {
+		return nil, nil
+	}
+
+	return cloneComment(c), nil
+}
+
+func (s *MemoryStore) ListCommentsByThreadID(
+	ctx context.Context,
+	threadID uuid.UUID,
+	userID uuid.UUID,
+) ([]*model.Comment, error) {
+	_ = ctx
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return s.listCommentsByThreadIDLocked(threadID, userID), nil
+}
+
+func (s *MemoryStore) DeleteComment(ctx context.Context, commentID uuid.UUID, userID uuid.UUID) error {
+	_ = ctx
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	c, ok := s.comments[commentID.String()]
+	if !ok {
+		return nil
+	}
+	if c.UserID != userID {
+		return fmt.Errorf("permission denied")
+	}
+
+	delete(s.comments, commentID.String())
+	return nil
+}
+
+func (s *MemoryStore) CountCommentsByThreadID(
+	ctx context.Context,
+	threadID uuid.UUID,
+	userID uuid.UUID,
+) (int64, error) {
+	_ = ctx
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var count int64
+	for _, c := range s.comments {
+		if c.ThreadID == threadID && c.UserID == userID {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func (s *MemoryStore) ListCommentThreadsByMessageIDs(
+	ctx context.Context,
+	userID uuid.UUID,
+	messageIDs []uuid.UUID,
+) ([]*model.CommentThread, error) {
+	_ = ctx
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if len(messageIDs) == 0 {
+		return []*model.CommentThread{}, nil
+	}
+
+	msgSet := make(map[uuid.UUID]struct{}, len(messageIDs))
+	for _, id := range messageIDs {
+		msgSet[id] = struct{}{}
+	}
+
+	out := make([]*model.CommentThread, 0)
+	for _, t := range s.commentThreads {
+		if t.UserID != userID {
+			continue
+		}
+		if _, ok := msgSet[t.MessageID]; !ok {
+			continue
+		}
+
+		threadCopy := cloneCommentThread(t)
+		threadCopy.Comments = s.listCommentsByThreadIDLocked(t.ID, userID)
+		out = append(out, threadCopy)
+	}
+
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].MessageID != out[j].MessageID {
+			return out[i].MessageID.String() < out[j].MessageID.String()
+		}
+		if out[i].RangeStart != out[j].RangeStart {
+			return out[i].RangeStart < out[j].RangeStart
+		}
+		if out[i].RangeEnd != out[j].RangeEnd {
+			return out[i].RangeEnd < out[j].RangeEnd
+		}
+		return out[i].CreatedAt.Before(out[j].CreatedAt)
+	})
+
+	return out, nil
+}
+
+// --------------------
+// Helpers
+// --------------------
+
+func extractDomainMsgs(in []memoryMsg) []model.Message {
 	out := make([]model.Message, len(in))
 	for i := range in {
-		out[i] = in[i].Msg
+		out[i] = cloneMessage(in[i].Msg)
+		if in[i].Metadata != nil {
+			out[i].Metadata = cloneMetadata(in[i].Metadata)
+		}
 	}
 	return out
 }
 
-func cloneMsgs(in []model.Message) []model.Message {
-	out := make([]model.Message, len(in))
-	copy(out, in)
-	return out
+func reverseMemoryMsgs(in []memoryMsg) {
+	for i, j := 0, len(in)-1; i < j; i, j = i+1, j-1 {
+		in[i], in[j] = in[j], in[i]
+	}
 }
 
 func cloneMetadata(in map[string]interface{}) map[string]interface{} {
+	if in == nil {
+		return nil
+	}
 	out := make(map[string]interface{}, len(in))
 	for k, v := range in {
 		out[k] = v
 	}
+	return out
+}
+
+func cloneStringPtr(in *string) *string {
+	if in == nil {
+		return nil
+	}
+	v := *in
+	return &v
+}
+
+func cloneUUIDPtr(in *uuid.UUID) *uuid.UUID {
+	if in == nil {
+		return nil
+	}
+	v := *in
+	return &v
+}
+
+func cloneTimePtr(in *time.Time) *time.Time {
+	if in == nil {
+		return nil
+	}
+	v := *in
+	return &v
+}
+
+func cloneMessage(in model.Message) model.Message {
+	out := in
+	out.Metadata = cloneMetadata(in.Metadata)
+	out.FavoriteLabel = cloneStringPtr(in.FavoriteLabel)
+	return out
+}
+
+func cloneAnnotation(in *model.Annotation) *model.Annotation {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	out.BgColor = cloneStringPtr(in.BgColor)
+	out.TextColor = cloneStringPtr(in.TextColor)
+
+	if in.IsBold != nil {
+		v := *in.IsBold
+		out.IsBold = &v
+	}
+	if in.IsUnderline != nil {
+		v := *in.IsUnderline
+		out.IsUnderline = &v
+	}
+
+	if in.ExtraAttrs != nil {
+		out.ExtraAttrs = make(map[string]interface{}, len(in.ExtraAttrs))
+		for k, v := range in.ExtraAttrs {
+			out.ExtraAttrs[k] = v
+		}
+	}
+
+	return &out
+}
+
+func cloneCommentThread(in *model.CommentThread) *model.CommentThread {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	if in.Comments != nil {
+		out.Comments = make([]*model.Comment, len(in.Comments))
+		for i, c := range in.Comments {
+			out.Comments[i] = cloneComment(c)
+		}
+	}
+	return &out
+}
+
+func cloneComment(in *model.Comment) *model.Comment {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	out.DeletedAt = cloneTimePtr(in.DeletedAt)
+	return &out
+}
+
+func (s *MemoryStore) listCommentsByThreadIDLocked(threadID uuid.UUID, userID uuid.UUID) []*model.Comment {
+	out := make([]*model.Comment, 0)
+	for _, c := range s.comments {
+		if c.ThreadID == threadID && c.UserID == userID {
+			out = append(out, cloneComment(c))
+		}
+	}
+
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].CreatedAt.Before(out[j].CreatedAt)
+	})
+
 	return out
 }

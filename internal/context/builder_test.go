@@ -6,17 +6,39 @@ import (
 
 	"rhea-backend/internal/model"
 	"rhea-backend/internal/store"
+
+	"github.com/google/uuid"
 )
 
 func TestBuilder_Build_NoSummary(t *testing.T) {
 	ctx := context.Background()
 	s := store.NewMemoryStore()
 
-	conv := "c1"
+	convID := uuid.New()
+	conv := convID.String()
+
+	_, err := s.CreateConversation(ctx, &model.Conversation{
+		ID:     convID,
+		UserID: uuid.New(),
+		Title:  "test",
+	})
+	if err != nil {
+		t.Fatalf("CreateConversation error: %v", err)
+	}
+
 	// Seed some history
-	_, _ = s.AppendMessage(ctx, conv, nil, model.Message{Role: model.RoleUser, Content: "hi"}, nil)
-	_, _ = s.AppendMessage(ctx, conv, nil, model.Message{Role: model.RoleAssistant, Content: "hello"}, nil)
-	_, _ = s.AppendMessage(ctx, conv, nil, model.Message{Role: model.RoleUser, Content: "how are you?"}, nil)
+	_, err = s.AppendMessage(ctx, conv, nil, model.Message{Role: model.RoleUser, Content: "hi"}, nil)
+	if err != nil {
+		t.Fatalf("AppendMessage error: %v", err)
+	}
+	_, err = s.AppendMessage(ctx, conv, nil, model.Message{Role: model.RoleAssistant, Content: "hello"}, nil)
+	if err != nil {
+		t.Fatalf("AppendMessage error: %v", err)
+	}
+	_, err = s.AppendMessage(ctx, conv, nil, model.Message{Role: model.RoleUser, Content: "how are you?"}, nil)
+	if err != nil {
+		t.Fatalf("AppendMessage error: %v", err)
+	}
 
 	b := &Builder{
 		Store:         s,
@@ -55,9 +77,27 @@ func TestBuilder_Build_WithSummary(t *testing.T) {
 	ctx := context.Background()
 	s := store.NewMemoryStore()
 
-	conv := "c1"
-	_ = s.SetSummary(ctx, conv, "User is learning Go. Prefers SSE streaming.")
-	_, _ = s.AppendMessage(ctx, conv, nil, model.Message{Role: model.RoleUser, Content: "old1"}, nil)
+	convID := uuid.New()
+	conv := convID.String()
+
+	_, err := s.CreateConversation(ctx, &model.Conversation{
+		ID:     convID,
+		UserID: uuid.New(),
+		Title:  "test",
+	})
+	if err != nil {
+		t.Fatalf("CreateConversation error: %v", err)
+	}
+
+	err = s.SetSummary(ctx, conv, "User is learning Go. Prefers SSE streaming.")
+	if err != nil {
+		t.Fatalf("SetSummary error: %v", err)
+	}
+
+	_, err = s.AppendMessage(ctx, conv, nil, model.Message{Role: model.RoleUser, Content: "old1"}, nil)
+	if err != nil {
+		t.Fatalf("AppendMessage error: %v", err)
+	}
 
 	b := &Builder{
 		Store:         s,
@@ -98,11 +138,31 @@ func TestBuilder_Build_NoRecentMaxMsgs(t *testing.T) {
 	ctx := context.Background()
 	s := store.NewMemoryStore()
 
-	conv := "c1"
+	convID := uuid.New()
+	conv := convID.String()
+
+	_, err := s.CreateConversation(ctx, &model.Conversation{
+		ID:     convID,
+		UserID: uuid.New(),
+		Title:  "test",
+	})
+	if err != nil {
+		t.Fatalf("CreateConversation error: %v", err)
+	}
+
 	// Seed some history
-	_, _ = s.AppendMessage(ctx, conv, nil, model.Message{Role: model.RoleUser, Content: "hi"}, nil)
-	_, _ = s.AppendMessage(ctx, conv, nil, model.Message{Role: model.RoleAssistant, Content: "hello"}, nil)
-	_, _ = s.AppendMessage(ctx, conv, nil, model.Message{Role: model.RoleUser, Content: "how are you?"}, nil)
+	_, err = s.AppendMessage(ctx, conv, nil, model.Message{Role: model.RoleUser, Content: "hi"}, nil)
+	if err != nil {
+		t.Fatalf("AppendMessage error: %v", err)
+	}
+	_, err = s.AppendMessage(ctx, conv, nil, model.Message{Role: model.RoleAssistant, Content: "hello"}, nil)
+	if err != nil {
+		t.Fatalf("AppendMessage error: %v", err)
+	}
+	_, err = s.AppendMessage(ctx, conv, nil, model.Message{Role: model.RoleUser, Content: "how are you?"}, nil)
+	if err != nil {
+		t.Fatalf("AppendMessage error: %v", err)
+	}
 
 	b := &Builder{
 		Store:         s,
