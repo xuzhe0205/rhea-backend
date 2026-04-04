@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
+	"gorm.io/gorm"
 )
 
 func (s *PostgresStore) AppendMessage(ctx context.Context, conversationID string, parentID *string, msg model.Message, metadata map[string]interface{}) (string, error) {
@@ -337,4 +338,43 @@ func (s *PostgresStore) SetMessageFavoriteLabel(
 	}
 
 	return nil
+}
+
+func (s *PostgresStore) GetAllMessagesByConvID(ctx context.Context, conversationID string) ([]model.Message, error) {
+	return s.GetMessagesByConvID(ctx, conversationID, 0, "asc", "")
+}
+
+func (s *PostgresStore) DeleteConversationMemorySnapshot(
+	ctx context.Context,
+	conversationID uuid.UUID,
+	sourceType model.MemorySourceType,
+) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var docIDs []uuid.UUID
+
+		if err := tx.
+			Model(&model.MemoryDocumentEntity{}).
+			Where("conversation_id = ? AND source_type = ?", conversationID, sourceType).
+			Pluck("id", &docIDs).Error; err != nil {
+			return err
+		}
+
+		if len(docIDs) == 0 {
+			return nil
+		}
+
+		if err := tx.
+			Where("document_id IN ?", docIDs).
+			Delete(&model.MemoryChunkEntity{}).Error; err != nil {
+			return err
+		}
+
+		if err := tx.
+			Where("id IN ?", docIDs).
+			Delete(&model.MemoryDocumentEntity{}).Error; err != nil {
+			return err
+		}
+
+		return nil
+	})
 }

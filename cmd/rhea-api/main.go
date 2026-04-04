@@ -11,9 +11,12 @@ import (
 	"rhea-backend/internal/auth"
 	"rhea-backend/internal/config"
 	ctxbuilder "rhea-backend/internal/context"
+	"rhea-backend/internal/embedding"
 	"rhea-backend/internal/httpapi"
 	"rhea-backend/internal/httpapi/middleware"
+	"rhea-backend/internal/ingest"
 	"rhea-backend/internal/llm"
+	"rhea-backend/internal/retrieval"
 	"rhea-backend/internal/router"
 	"rhea-backend/internal/service"
 	"rhea-backend/internal/store"
@@ -50,11 +53,6 @@ func main() {
 
 	systemPrompt := agent.GetDefaultSystemPrompt()
 
-	b := &ctxbuilder.Builder{
-		Store:         st,
-		SystemPrompt:  systemPrompt,
-		RecentMaxMsgs: 20,
-	}
 	ctx := context.Background()
 
 	// --- 🚀 RHEA 多模型分层初始化 ---
@@ -83,6 +81,42 @@ func main() {
 		log.Fatalf("Failed to init Gemini Lite: %v", err)
 	}
 
+	embedProvider, err := embedding.NewGeminiEmbeddingProvider(
+		ctx,
+		cfg.GeminiAPIKey,
+		cfg.GeminiEmbeddingModel,
+	)
+	if err != nil {
+		log.Fatalf("Failed to init Gemini embedding provider: %v", err)
+	}
+
+	embedSvc := &embedding.Service{
+		Provider: embedProvider,
+	}
+
+	retrievalSvc := &retrieval.Service{
+		Store:      st,
+		Embeddings: embedSvc,
+		Policy: retrieval.Policy{
+			TopK:             8,
+			MinFinalScore:    0.35,
+			RequireAnySignal: true,
+		},
+	}
+
+	ingestor := &ingest.ConversationIngestor{
+		Store:      st,
+		Embeddings: embedSvc,
+	}
+
+	builder := &ctxbuilder.Builder{
+		Store:         st,
+		Retrieval:     retrievalSvc,
+		SystemPrompt:  systemPrompt,
+		RecentMaxMsgs: 20,
+		RetrievalTopK: 8,
+	}
+
 	// 装配智能路由器
 	r := &router.Router{
 		GeminiPro:       pPro,
@@ -94,9 +128,10 @@ func main() {
 	// --- 🚀 初始化核心 Service ---
 
 	svc := &agent.Service{
-		Store:   st,
-		Builder: b,
-		Router:  r,
+		Store:    st,
+		Builder:  builder,
+		Router:   r,
+		Ingestor: ingestor,
 	}
 
 	authSvc := auth.NewService(st)

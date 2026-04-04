@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	ctxbuilder "rhea-backend/internal/context"
 	"rhea-backend/internal/llm"
 	"rhea-backend/internal/model"
 	"rhea-backend/internal/pkg/netutil"
@@ -90,7 +91,10 @@ func (s *Service) ChatStream(
 	}
 
 	// 5) 构建上下文
-	msgs, err := s.Builder.Build(ctx, conversationID, "")
+	msgs, err := s.Builder.Build(ctx, ctxbuilder.BuildInput{
+		ConversationID: conversationID,
+		UserMsg:        userText,
+	})
 	if err != nil {
 		return "", err
 	}
@@ -189,6 +193,17 @@ func (s *Service) ChatStream(
 	if err != nil {
 		log.Printf("[ChatStream] Error updating pointer and tokens: %v", err)
 		return conversationID, err
+	}
+
+	if s.Ingestor != nil {
+		ingestCtx, cancelIngest := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancelIngest()
+
+		if err := s.Ingestor.RebuildConversationSnapshot(ingestCtx, conversationID); err != nil {
+			log.Printf("[ChatStream] Warning: failed to rebuild memory snapshot for conv=%s: %v", conversationID, err)
+		} else {
+			log.Printf("[ChatStream] Memory snapshot rebuilt for conv=%s", conversationID)
+		}
 	}
 
 	if updatedTotal > 1000000 {

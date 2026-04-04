@@ -38,14 +38,17 @@ func (s *PostgresStore) GetConversation(ctx context.Context, id string) (*model.
 	}
 
 	return &model.Conversation{
-		ID:               entity.ID,
-		Title:            entity.Title,
-		LastMsgID:        entity.LastMsgID,
-		Summary:          entity.Summary,
-		UserID:           entity.UserID,
-		IsPinned:         entity.IsPinned,
-		PinnedAt:         entity.PinnedAt,
-		CumulativeTokens: entity.TokenSum,
+		ID:                    entity.ID,
+		Title:                 entity.Title,
+		LastMsgID:             entity.LastMsgID,
+		Summary:               entity.Summary,
+		UserID:                entity.UserID,
+		IsPinned:              entity.IsPinned,
+		PinnedAt:              entity.PinnedAt,
+		CumulativeTokens:      entity.TokenSum,
+		ProjectID:             entity.ProjectID,
+		SummaryUpdatedAt:      entity.SummaryUpdatedAt,
+		MemoryCheckpointMsgID: entity.MemoryCheckpointMsgID,
 	}, nil
 }
 

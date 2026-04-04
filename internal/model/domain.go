@@ -29,15 +29,17 @@ type Message struct {
 }
 
 type Conversation struct {
-	ID               uuid.UUID  `json:"id"`
-	UserID           uuid.UUID  `json:"user_id"`
-	Title            string     `json:"title"`
-	LastMsgID        *uuid.UUID `json:"last_msg_id"`
-	Summary          string     `json:"summary"`
-	IsPinned         bool       `json:"is_pinned"`
-	PinnedAt         *time.Time `json:"pinned_at,omitempty"`
-	CumulativeTokens int        `json:"cumulative_tokens"`
-	LastSummaryAt    time.Time  `json:"last_summary_at"`
+	ID                    uuid.UUID  `json:"id"`
+	UserID                uuid.UUID  `json:"user_id"`
+	ProjectID             *uuid.UUID `json:"project_id,omitempty"`
+	Title                 string     `json:"title"`
+	LastMsgID             *uuid.UUID `json:"last_msg_id"`
+	Summary               string     `json:"summary"`
+	IsPinned              bool       `json:"is_pinned"`
+	PinnedAt              *time.Time `json:"pinned_at,omitempty"`
+	CumulativeTokens      int        `json:"cumulative_tokens"`
+	SummaryUpdatedAt      *time.Time `json:"summary_updated_at,omitempty"`
+	MemoryCheckpointMsgID *uuid.UUID `json:"memory_checkpoint_msg_id,omitempty"`
 }
 
 type User struct {

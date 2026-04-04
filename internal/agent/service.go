@@ -10,6 +10,7 @@ import (
 
 	"rhea-backend/internal/auth"
 	ctxbuilder "rhea-backend/internal/context"
+	"rhea-backend/internal/ingest"
 	"rhea-backend/internal/llm"
 	"rhea-backend/internal/model"
 	"rhea-backend/internal/router"
@@ -23,9 +24,10 @@ var ErrNoProvider = errors.New("no provider available")
 // var tempUserID = uuid.MustParse("04260bc3-0f0b-4268-a079-21375a2340ea")
 
 type Service struct {
-	Store   store.Store
-	Builder *ctxbuilder.Builder
-	Router  *router.Router
+	Store    store.Store
+	Builder  *ctxbuilder.Builder
+	Router   *router.Router
+	Ingestor *ingest.ConversationIngestor
 }
 
 func (s *Service) Chat(ctx context.Context, conversationID string, userText string) (string, string, error) {
@@ -87,7 +89,10 @@ func (s *Service) Chat(ctx context.Context, conversationID string, userText stri
 	// 4) Build context (includes the new user message)
 	// 构建上下文
 	// 此时 GetRecentMessages(conversationID) 理论上能查到刚才存的那条 userMsg 了
-	msgs, err := s.Builder.Build(ctx, conversationID, "")
+	msgs, err := s.Builder.Build(ctx, ctxbuilder.BuildInput{
+		ConversationID: conversationID,
+		UserMsg:        "",
+	})
 	if err != nil {
 		return "", "", err
 	}

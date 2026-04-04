@@ -15,7 +15,14 @@ import (
 	"github.com/google/uuid"
 
 	"rhea-backend/internal/model"
+	"rhea-backend/internal/rag"
 )
+
+type MemoryChunkSearchResult struct {
+	Chunk        model.MemoryChunkEntity
+	VectorScore  float64
+	KeywordScore float64
+}
 
 type Store interface {
 	// Message 相关
@@ -82,4 +89,72 @@ type Store interface {
 	DeleteComment(ctx context.Context, commentID uuid.UUID, userID uuid.UUID) error
 	CountCommentsByThreadID(ctx context.Context, threadID uuid.UUID, userID uuid.UUID) (int64, error)
 	ListCommentThreadsByMessageIDs(ctx context.Context, userID uuid.UUID, messageIDs []uuid.UUID) ([]*model.CommentThread, error)
+
+	CreateMemoryDocument(ctx context.Context, doc *model.MemoryDocumentEntity) error
+	BulkCreateMemoryChunks(ctx context.Context, chunks []model.MemoryChunkEntity) error
+	BulkCreateMemoryEmbeddings(ctx context.Context, embeddings []model.MemoryEmbeddingEntity) error
+
+	// RAG
+	// ===== Memory read path =====
+	VectorSearchMemoryChunks(
+		ctx context.Context,
+		userID uuid.UUID,
+		conversationID uuid.UUID,
+		projectID *uuid.UUID,
+		scope rag.Scope,
+		queryEmbedding []float32,
+		limit int,
+	) ([]MemoryChunkSearchResult, error)
+
+	KeywordSearchMemoryChunks(
+		ctx context.Context,
+		userID uuid.UUID,
+		conversationID uuid.UUID,
+		projectID *uuid.UUID,
+		scope rag.Scope,
+		query string,
+		limit int,
+	) ([]MemoryChunkSearchResult, error)
+
+	UpdateMemoryDocumentStatus(
+		ctx context.Context,
+		documentID uuid.UUID,
+		status model.MemoryDocStatus,
+	) error
+
+	MarkMemoryDocumentIndexed(
+		ctx context.Context,
+		documentID uuid.UUID,
+	) error
+
+	MarkMemoryDocumentFailed(
+		ctx context.Context,
+		documentID uuid.UUID,
+		errMsg string,
+	) error
+
+	DeactivateActiveMemoryDocuments(
+		ctx context.Context,
+		conversationID uuid.UUID,
+		sourceType model.MemorySourceType,
+		excludeDocumentID uuid.UUID,
+	) error
+
+	// ===== Memory checkpoint =====
+	UpdateConversationMemoryCheckpoint(
+		ctx context.Context,
+		conversationID uuid.UUID,
+		checkpointMsgID uuid.UUID,
+	) error
+
+	DeleteConversationMemorySnapshot(
+		ctx context.Context,
+		conversationID uuid.UUID,
+		sourceType model.MemorySourceType,
+	) error
+
+	GetAllMessagesByConvID(
+		ctx context.Context,
+		conversationID string,
+	) ([]model.Message, error)
 }

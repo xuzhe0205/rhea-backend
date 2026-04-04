@@ -8,12 +8,13 @@ import (
 )
 
 type Config struct {
-	GeminiAPIKey     string
-	GeminiAPIKeyFree string
-	ModelPro         string
-	ModelFlash       string
-	ModelLite        string
-	DBDSN            string
+	GeminiEmbeddingModel string
+	GeminiAPIKey         string
+	GeminiAPIKeyFree     string
+	ModelPro             string
+	ModelFlash           string
+	ModelLite            string
+	DBDSN                string
 }
 
 func Load() (*Config, error) {
@@ -46,8 +47,9 @@ func Load() (*Config, error) {
 	}
 
 	cfg := &Config{
-		GeminiAPIKey:     os.Getenv("GEMINI_API_KEY"),
-		GeminiAPIKeyFree: os.Getenv("GEMINI_API_KEY_FREE"),
+		GeminiEmbeddingModel: getenvDefault("GEMINI_EMBEDDING_TEXT_ONLY", "gemini-embedding-001"),
+		GeminiAPIKey:         os.Getenv("GEMINI_API_KEY"),
+		GeminiAPIKeyFree:     os.Getenv("GEMINI_API_KEY_FREE"),
 		// 从环境变量读取，如果没有则赋予默认值
 		ModelPro:   getenvDefault("GEMINI_MODEL_PRO", "gemini-2.5-pro"),
 		ModelFlash: getenvDefault("GEMINI_MODEL_FLASH", "gemini-3-flash-preview"),
@@ -56,7 +58,7 @@ func Load() (*Config, error) {
 	}
 
 	if cfg.GeminiAPIKey == "" || cfg.GeminiAPIKeyFree == "" {
-		return nil, fmt.Errorf("GEMINI_API_KEY and GeminiAPIKeyFree are required")
+		return nil, fmt.Errorf("GEMINI_API_KEY and GEMINI_API_KEY_FREE are required")
 	}
 
 	return cfg, nil

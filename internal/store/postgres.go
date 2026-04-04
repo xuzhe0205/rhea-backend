@@ -17,12 +17,15 @@ func InitDB(dsn string) (*gorm.DB, error) {
 	// 自动迁移：GORM 会根据你的 struct 自动建表或加字段
 	err = db.AutoMigrate(
 		&model.UserEntity{},
-		&model.Project{},
+		&model.ProjectEntity{},
 		&model.ConversationEntity{},
 		&model.MessageEntity{},
 		&model.AnnotationEntity{},
 		&model.CommentEntity{},
 		&model.CommentThreadEntity{},
+		&model.MemoryChunkEntity{},
+		&model.MemoryDocumentEntity{},
+		&model.MemoryEmbeddingEntity{},
 	)
 	if err != nil {
 		return nil, err
