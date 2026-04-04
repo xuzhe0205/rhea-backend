@@ -11,6 +11,7 @@ import (
 
 	"rhea-backend/internal/model"
 	"rhea-backend/internal/rag"
+	"rhea-backend/internal/retrieval"
 	"rhea-backend/internal/store"
 )
 
@@ -203,6 +204,7 @@ func (s *PostgresStore) KeywordSearchMemoryChunks(
 	projectID *uuid.UUID,
 	scope rag.Scope,
 	query string,
+	ftsConfig string,
 	limit int,
 ) ([]store.MemoryChunkSearchResult, error) {
 	query = strings.TrimSpace(query)
@@ -212,6 +214,8 @@ func (s *PostgresStore) KeywordSearchMemoryChunks(
 	if limit <= 0 {
 		limit = 8
 	}
+
+	cfg := retrieval.NormalizeFTSConfig(ftsConfig)
 
 	scopeClause := ""
 	scopeArgs := make([]interface{}, 0, 2)
@@ -252,8 +256,8 @@ func (s *PostgresStore) KeywordSearchMemoryChunks(
 		mc.token_count,
 		mc.importance_score,
 		ts_rank_cd(
-			to_tsvector('english', coalesce(mc.content, '')),
-			websearch_to_tsquery('english', ?)
+			to_tsvector('` + cfg + `', coalesce(mc.content, '')),
+			websearch_to_tsquery('` + cfg + `', ?)
 		) AS keyword_score
 	FROM memory_chunk_entities mc
 	JOIN memory_document_entities md
@@ -264,7 +268,7 @@ func (s *PostgresStore) KeywordSearchMemoryChunks(
 		AND md.active = true
 		AND md.status = 'indexed'
 		AND ` + scopeClause + `
-		AND to_tsvector('english', coalesce(mc.content, '')) @@ websearch_to_tsquery('english', ?)
+		AND to_tsvector('` + cfg + `', coalesce(mc.content, '')) @@ websearch_to_tsquery('` + cfg + `', ?)
 	ORDER BY keyword_score DESC
 	LIMIT ?
 	`
@@ -304,25 +308,6 @@ func (s *PostgresStore) KeywordSearchMemoryChunks(
 	}
 
 	return results, nil
-}
-
-func (s *PostgresStore) UpdateMemoryDocumentStatus(
-	ctx context.Context,
-	documentID uuid.UUID,
-	status model.MemoryDocStatus,
-) error {
-	result := s.db.WithContext(ctx).
-		Model(&model.MemoryDocumentEntity{}).
-		Where("id = ?", documentID).
-		Update("status", status)
-
-	if result.Error != nil {
-		return result.Error
-	}
-	if result.RowsAffected == 0 {
-		return gorm.ErrRecordNotFound
-	}
-	return nil
 }
 
 func (s *PostgresStore) MarkMemoryDocumentIndexed(
@@ -392,26 +377,4 @@ func (s *PostgresStore) DeactivateActiveMemoryDocuments(
 			excludeDocumentID,
 		).
 		Update("active", false).Error
-}
-
-func buildScopeClause(scope rag.Scope, projectID *uuid.UUID) (string, []interface{}, error) {
-	switch scope {
-	case rag.ScopeConversationOnly:
-		return "mc.conversation_id = ?", []interface{}{}, nil
-
-	case rag.ScopeConversationAndProject:
-		if projectID == nil {
-			return "", nil, fmt.Errorf("project_id is required for conversation_and_project scope")
-		}
-		return "(mc.conversation_id = ? OR mc.project_id = ?)", []interface{}{*projectID}, nil
-
-	case rag.ScopeProjectOnly:
-		if projectID == nil {
-			return "", nil, fmt.Errorf("project_id is required for project_only scope")
-		}
-		return "mc.project_id = ?", []interface{}{*projectID}, nil
-
-	default:
-		return "", nil, fmt.Errorf("unsupported retrieval scope: %s", scope)
-	}
 }

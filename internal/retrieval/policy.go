@@ -7,6 +7,7 @@ type Policy struct {
 	MinVectorScore      float64
 	MinKeywordScore     float64
 	RequireAnySignal    bool
+	FTSConfig           string
 }
 
 func DefaultPolicy() Policy {
@@ -17,5 +18,6 @@ func DefaultPolicy() Policy {
 		MinVectorScore:      0.0,
 		MinKeywordScore:     0.0,
 		RequireAnySignal:    true,
+		FTSConfig:           "english",
 	}
 }

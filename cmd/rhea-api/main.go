@@ -113,7 +113,7 @@ func main() {
 		Store:         st,
 		Retrieval:     retrievalSvc,
 		SystemPrompt:  systemPrompt,
-		RecentMaxMsgs: 20,
+		RecentMaxMsgs: 10,
 		RetrievalTopK: 8,
 	}
 

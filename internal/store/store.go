@@ -113,14 +113,9 @@ type Store interface {
 		projectID *uuid.UUID,
 		scope rag.Scope,
 		query string,
+		ftsConfig string,
 		limit int,
 	) ([]MemoryChunkSearchResult, error)
-
-	UpdateMemoryDocumentStatus(
-		ctx context.Context,
-		documentID uuid.UUID,
-		status model.MemoryDocStatus,
-	) error
 
 	MarkMemoryDocumentIndexed(
 		ctx context.Context,

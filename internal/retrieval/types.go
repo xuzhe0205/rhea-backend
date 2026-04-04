@@ -3,6 +3,7 @@ package retrieval
 import (
 	"rhea-backend/internal/model"
 	"rhea-backend/internal/rag"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -21,6 +22,8 @@ type RetrievedChunk struct {
 	VectorScore  float64
 	KeywordScore float64
 	FinalScore   float64
+	IndexedAt    *time.Time
+	CreatedAt    time.Time
 }
 
 type RetrievedContext struct {
