@@ -18,6 +18,7 @@ import (
 type StreamCallbacks struct {
 	OnDelta func(delta string) error
 	OnMeta  func(payload map[string]any) error
+	OnModel func(model string) error
 }
 
 func (s *Service) ChatStream(
@@ -137,6 +138,9 @@ func (s *Service) ChatStream(
 
 		if lastErr == nil {
 			break
+		}
+		if cb.OnModel != nil {
+			_ = cb.OnModel(string(p.Name()) + ":" + p.ModelName())
 		}
 
 		// 如果已经吐出过内容，就不要再切 provider，直接返回错误

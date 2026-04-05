@@ -86,6 +86,9 @@ func (h *ChatStreamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			return writeEvent("meta", string(b))
 		},
+		OnModel: func(model string) error {
+			return writeEvent("model", model)
+		},
 	}
 
 	_, err := h.Agent.ChatStream(r.Context(), req.ConversationID, req.Message, callbacks)
