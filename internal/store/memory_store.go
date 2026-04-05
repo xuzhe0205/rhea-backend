@@ -11,13 +11,16 @@ package store
 import (
 	"context"
 	"fmt"
+	"math"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 
 	"rhea-backend/internal/model"
+	"rhea-backend/internal/rag"
 )
 
 type memoryMsg struct {
@@ -30,23 +33,18 @@ type memoryMsg struct {
 }
 
 type memoryConv struct {
-	ID        uuid.UUID
-	UserID    uuid.UUID
-	Title     string
-	LastMsgID *uuid.UUID
-	TokenSum  int
-	Summary   string
-	UpdatedAt time.Time
-	IsPinned  bool
-	PinnedAt  *time.Time
-}
-
-type memoryCommentThread struct {
-	Thread model.CommentThread
-}
-
-type memoryComment struct {
-	Comment model.Comment
+	ID                    uuid.UUID
+	UserID                uuid.UUID
+	ProjectID             *uuid.UUID
+	Title                 string
+	LastMsgID             *uuid.UUID
+	TokenSum              int
+	Summary               string
+	UpdatedAt             time.Time
+	IsPinned              bool
+	PinnedAt              *time.Time
+	SummaryUpdatedAt      *time.Time
+	MemoryCheckpointMsgID *uuid.UUID
 }
 
 type MemoryStore struct {
@@ -60,17 +58,24 @@ type MemoryStore struct {
 	annotations    map[string]*model.Annotation    // annID -> ann
 	commentThreads map[string]*model.CommentThread // threadID -> thread
 	comments       map[string]*model.Comment       // commentID -> comment
+
+	memoryDocuments  map[uuid.UUID]*model.MemoryDocumentEntity  // docID -> doc
+	memoryChunks     map[uuid.UUID]*model.MemoryChunkEntity     // chunkID -> chunk
+	memoryEmbeddings map[uuid.UUID]*model.MemoryEmbeddingEntity // chunkID -> embedding
 }
 
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
-		messages:       make(map[string][]memoryMsg),
-		conversations:  make(map[string]*memoryConv),
-		summary:        make(map[string]string),
-		users:          make(map[string]*model.User),
-		annotations:    make(map[string]*model.Annotation),
-		commentThreads: make(map[string]*model.CommentThread),
-		comments:       make(map[string]*model.Comment),
+		messages:         make(map[string][]memoryMsg),
+		conversations:    make(map[string]*memoryConv),
+		summary:          make(map[string]string),
+		users:            make(map[string]*model.User),
+		annotations:      make(map[string]*model.Annotation),
+		commentThreads:   make(map[string]*model.CommentThread),
+		comments:         make(map[string]*model.Comment),
+		memoryDocuments:  make(map[uuid.UUID]*model.MemoryDocumentEntity),
+		memoryChunks:     make(map[uuid.UUID]*model.MemoryChunkEntity),
+		memoryEmbeddings: make(map[uuid.UUID]*model.MemoryEmbeddingEntity),
 	}
 }
 
@@ -372,15 +377,18 @@ func (s *MemoryStore) CreateConversation(ctx context.Context, conv *model.Conver
 	}
 
 	s.conversations[conv.ID.String()] = &memoryConv{
-		ID:        conv.ID,
-		UserID:    conv.UserID,
-		Title:     conv.Title,
-		LastMsgID: cloneUUIDPtr(conv.LastMsgID),
-		Summary:   conv.Summary,
-		TokenSum:  conv.CumulativeTokens,
-		UpdatedAt: time.Now(),
-		IsPinned:  conv.IsPinned,
-		PinnedAt:  cloneTimePtr(conv.PinnedAt),
+		ID:                    conv.ID,
+		UserID:                conv.UserID,
+		ProjectID:             cloneUUIDPtr(conv.ProjectID),
+		Title:                 conv.Title,
+		LastMsgID:             cloneUUIDPtr(conv.LastMsgID),
+		Summary:               conv.Summary,
+		TokenSum:              conv.CumulativeTokens,
+		UpdatedAt:             time.Now(),
+		IsPinned:              conv.IsPinned,
+		PinnedAt:              cloneTimePtr(conv.PinnedAt),
+		SummaryUpdatedAt:      cloneTimePtr(conv.SummaryUpdatedAt),
+		MemoryCheckpointMsgID: cloneUUIDPtr(conv.MemoryCheckpointMsgID),
 	}
 
 	return conv.ID.String(), nil
@@ -398,14 +406,17 @@ func (s *MemoryStore) GetConversation(ctx context.Context, id string) (*model.Co
 	}
 
 	return &model.Conversation{
-		ID:               mc.ID,
-		UserID:           mc.UserID,
-		Title:            mc.Title,
-		LastMsgID:        cloneUUIDPtr(mc.LastMsgID),
-		Summary:          mc.Summary,
-		IsPinned:         mc.IsPinned,
-		PinnedAt:         cloneTimePtr(mc.PinnedAt),
-		CumulativeTokens: mc.TokenSum,
+		ID:                    mc.ID,
+		UserID:                mc.UserID,
+		ProjectID:             cloneUUIDPtr(mc.ProjectID),
+		Title:                 mc.Title,
+		LastMsgID:             cloneUUIDPtr(mc.LastMsgID),
+		Summary:               mc.Summary,
+		IsPinned:              mc.IsPinned,
+		PinnedAt:              cloneTimePtr(mc.PinnedAt),
+		CumulativeTokens:      mc.TokenSum,
+		SummaryUpdatedAt:      cloneTimePtr(mc.SummaryUpdatedAt),
+		MemoryCheckpointMsgID: cloneUUIDPtr(mc.MemoryCheckpointMsgID),
 	}, nil
 }
 
@@ -491,13 +502,17 @@ func (s *MemoryStore) ListConversationsByUserID(ctx context.Context, userID uuid
 	out := make([]*model.Conversation, len(results))
 	for i, mc := range results {
 		out[i] = &model.Conversation{
-			ID:        mc.ID,
-			UserID:    mc.UserID,
-			Title:     mc.Title,
-			LastMsgID: cloneUUIDPtr(mc.LastMsgID),
-			Summary:   mc.Summary,
-			IsPinned:  mc.IsPinned,
-			PinnedAt:  cloneTimePtr(mc.PinnedAt),
+			ID:                    mc.ID,
+			UserID:                mc.UserID,
+			ProjectID:             cloneUUIDPtr(mc.ProjectID),
+			Title:                 mc.Title,
+			LastMsgID:             cloneUUIDPtr(mc.LastMsgID),
+			Summary:               mc.Summary,
+			IsPinned:              mc.IsPinned,
+			PinnedAt:              cloneTimePtr(mc.PinnedAt),
+			CumulativeTokens:      mc.TokenSum,
+			SummaryUpdatedAt:      cloneTimePtr(mc.SummaryUpdatedAt),
+			MemoryCheckpointMsgID: cloneUUIDPtr(mc.MemoryCheckpointMsgID),
 		}
 	}
 	return out, nil
@@ -543,13 +558,17 @@ func (s *MemoryStore) ListPinnedConversationsByUserID(ctx context.Context, userI
 	out := make([]*model.Conversation, len(results))
 	for i, mc := range results {
 		out[i] = &model.Conversation{
-			ID:        mc.ID,
-			UserID:    mc.UserID,
-			Title:     mc.Title,
-			LastMsgID: cloneUUIDPtr(mc.LastMsgID),
-			Summary:   mc.Summary,
-			IsPinned:  mc.IsPinned,
-			PinnedAt:  cloneTimePtr(mc.PinnedAt),
+			ID:                    mc.ID,
+			UserID:                mc.UserID,
+			ProjectID:             cloneUUIDPtr(mc.ProjectID),
+			Title:                 mc.Title,
+			LastMsgID:             cloneUUIDPtr(mc.LastMsgID),
+			Summary:               mc.Summary,
+			IsPinned:              mc.IsPinned,
+			PinnedAt:              cloneTimePtr(mc.PinnedAt),
+			CumulativeTokens:      mc.TokenSum,
+			SummaryUpdatedAt:      cloneTimePtr(mc.SummaryUpdatedAt),
+			MemoryCheckpointMsgID: cloneUUIDPtr(mc.MemoryCheckpointMsgID),
 		}
 	}
 	return out, nil
@@ -589,9 +608,12 @@ func (s *MemoryStore) SetSummary(ctx context.Context, conversationID string, sum
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
 	s.summary[conversationID] = summary
 	if conv, ok := s.conversations[conversationID]; ok {
+		now := time.Now()
 		conv.Summary = summary
+		conv.SummaryUpdatedAt = &now
 	}
 	return nil
 }
@@ -682,7 +704,6 @@ func (s *MemoryStore) GetAnnotationByFeature(
 		}
 	}
 
-	// Match Postgres behavior: not found returns nil, nil
 	return nil, nil
 }
 
@@ -1079,6 +1100,393 @@ func (s *MemoryStore) ListCommentThreadsByMessageIDs(
 }
 
 // --------------------
+// RAG / Memory methods
+// --------------------
+
+func (s *MemoryStore) CreateMemoryDocument(ctx context.Context, doc *model.MemoryDocumentEntity) error {
+	_ = ctx
+
+	if doc == nil {
+		return fmt.Errorf("memory document is nil")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	docCopy := cloneMemoryDocument(doc)
+	if docCopy.ID == uuid.Nil {
+		docCopy.ID = uuid.New()
+	}
+	now := time.Now()
+	if docCopy.CreatedAt.IsZero() {
+		docCopy.CreatedAt = now
+	}
+	if docCopy.UpdatedAt.IsZero() {
+		docCopy.UpdatedAt = now
+	}
+
+	s.memoryDocuments[docCopy.ID] = docCopy
+	return nil
+}
+
+func (s *MemoryStore) BulkCreateMemoryChunks(ctx context.Context, chunks []model.MemoryChunkEntity) error {
+	_ = ctx
+
+	if len(chunks) == 0 {
+		return nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now()
+	for _, chunk := range chunks {
+		chunkCopy := cloneMemoryChunk(&chunk)
+		if chunkCopy.ID == uuid.Nil {
+			chunkCopy.ID = uuid.New()
+		}
+		if chunkCopy.CreatedAt.IsZero() {
+			chunkCopy.CreatedAt = now
+		}
+		if chunkCopy.UpdatedAt.IsZero() {
+			chunkCopy.UpdatedAt = now
+		}
+		s.memoryChunks[chunkCopy.ID] = chunkCopy
+	}
+
+	return nil
+}
+
+func (s *MemoryStore) BulkCreateMemoryEmbeddings(ctx context.Context, embeddings []model.MemoryEmbeddingEntity) error {
+	_ = ctx
+
+	if len(embeddings) == 0 {
+		return nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now()
+	for _, emb := range embeddings {
+		embCopy := cloneMemoryEmbedding(&emb)
+		if embCopy.ChunkID == uuid.Nil {
+			return fmt.Errorf("memory embedding chunk_id is required")
+		}
+		if embCopy.CreatedAt.IsZero() {
+			embCopy.CreatedAt = now
+		}
+		s.memoryEmbeddings[embCopy.ChunkID] = embCopy
+	}
+
+	return nil
+}
+
+func (s *MemoryStore) VectorSearchMemoryChunks(
+	ctx context.Context,
+	userID uuid.UUID,
+	conversationID uuid.UUID,
+	projectID *uuid.UUID,
+	scope rag.Scope,
+	queryEmbedding []float32,
+	limit int,
+) ([]MemoryChunkSearchResult, error) {
+	_ = ctx
+
+	if len(queryEmbedding) == 0 {
+		return nil, fmt.Errorf("query embedding is empty")
+	}
+	if limit <= 0 {
+		limit = 8
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	results := make([]MemoryChunkSearchResult, 0)
+
+	for chunkID, chunk := range s.memoryChunks {
+		doc, ok := s.memoryDocuments[chunk.DocumentID]
+		if !ok {
+			continue
+		}
+		emb, ok := s.memoryEmbeddings[chunkID]
+		if !ok {
+			continue
+		}
+		if chunk.UserID != userID || doc.UserID != userID {
+			continue
+		}
+		if !doc.Active || doc.Status != model.MemoryDocIndexed {
+			continue
+		}
+		if !memoryChunkMatchesScope(chunk, conversationID, projectID, scope) {
+			continue
+		}
+
+		score := cosineSimilarity(queryEmbedding, emb.Embedding.Slice())
+		results = append(results, MemoryChunkSearchResult{
+			Chunk:        *cloneMemoryChunk(chunk),
+			VectorScore:  score,
+			KeywordScore: 0,
+		})
+	}
+
+	sort.Slice(results, func(i, j int) bool {
+		if results[i].VectorScore != results[j].VectorScore {
+			return results[i].VectorScore > results[j].VectorScore
+		}
+		if results[i].Chunk.ImportanceScore != results[j].Chunk.ImportanceScore {
+			return results[i].Chunk.ImportanceScore > results[j].Chunk.ImportanceScore
+		}
+		if results[i].Chunk.ChunkIndex != results[j].Chunk.ChunkIndex {
+			return results[i].Chunk.ChunkIndex < results[j].Chunk.ChunkIndex
+		}
+		return results[i].Chunk.ID.String() < results[j].Chunk.ID.String()
+	})
+
+	if len(results) > limit {
+		results = results[:limit]
+	}
+	return results, nil
+}
+
+func (s *MemoryStore) KeywordSearchMemoryChunks(
+	ctx context.Context,
+	userID uuid.UUID,
+	conversationID uuid.UUID,
+	projectID *uuid.UUID,
+	scope rag.Scope,
+	query string,
+	ftsConfig string,
+	limit int,
+) ([]MemoryChunkSearchResult, error) {
+	_ = ctx
+	_ = ftsConfig
+
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return []MemoryChunkSearchResult{}, nil
+	}
+	if limit <= 0 {
+		limit = 8
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	queryTokens := tokenizeForSearch(query)
+	if len(queryTokens) == 0 {
+		return []MemoryChunkSearchResult{}, nil
+	}
+
+	results := make([]MemoryChunkSearchResult, 0)
+
+	for _, chunk := range s.memoryChunks {
+		doc, ok := s.memoryDocuments[chunk.DocumentID]
+		if !ok {
+			continue
+		}
+		if chunk.UserID != userID || doc.UserID != userID {
+			continue
+		}
+		if !doc.Active || doc.Status != model.MemoryDocIndexed {
+			continue
+		}
+		if !memoryChunkMatchesScope(chunk, conversationID, projectID, scope) {
+			continue
+		}
+
+		score := keywordScore(chunk.Content, queryTokens)
+		if score <= 0 {
+			continue
+		}
+
+		results = append(results, MemoryChunkSearchResult{
+			Chunk:        *cloneMemoryChunk(chunk),
+			VectorScore:  0,
+			KeywordScore: score,
+		})
+	}
+
+	sort.Slice(results, func(i, j int) bool {
+		if results[i].KeywordScore != results[j].KeywordScore {
+			return results[i].KeywordScore > results[j].KeywordScore
+		}
+		if results[i].Chunk.ImportanceScore != results[j].Chunk.ImportanceScore {
+			return results[i].Chunk.ImportanceScore > results[j].Chunk.ImportanceScore
+		}
+		if results[i].Chunk.ChunkIndex != results[j].Chunk.ChunkIndex {
+			return results[i].Chunk.ChunkIndex < results[j].Chunk.ChunkIndex
+		}
+		return results[i].Chunk.ID.String() < results[j].Chunk.ID.String()
+	})
+
+	if len(results) > limit {
+		results = results[:limit]
+	}
+	return results, nil
+}
+
+func (s *MemoryStore) MarkMemoryDocumentIndexed(
+	ctx context.Context,
+	documentID uuid.UUID,
+) error {
+	_ = ctx
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	doc, ok := s.memoryDocuments[documentID]
+	if !ok {
+		return fmt.Errorf("memory document not found: %s", documentID)
+	}
+
+	now := time.Now()
+	doc.Status = model.MemoryDocIndexed
+	doc.Active = true
+	doc.IndexedAt = &now
+	doc.FailedAt = nil
+	doc.ErrorMsg = ""
+	doc.UpdatedAt = now
+
+	return nil
+}
+
+func (s *MemoryStore) MarkMemoryDocumentFailed(
+	ctx context.Context,
+	documentID uuid.UUID,
+	errMsg string,
+) error {
+	_ = ctx
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	doc, ok := s.memoryDocuments[documentID]
+	if !ok {
+		return fmt.Errorf("memory document not found: %s", documentID)
+	}
+
+	now := time.Now()
+	doc.Status = model.MemoryDocFailed
+	doc.Active = false
+	doc.FailedAt = &now
+	doc.ErrorMsg = errMsg
+	doc.UpdatedAt = now
+
+	return nil
+}
+
+func (s *MemoryStore) DeactivateActiveMemoryDocuments(
+	ctx context.Context,
+	conversationID uuid.UUID,
+	sourceType model.MemorySourceType,
+	excludeDocumentID uuid.UUID,
+) error {
+	_ = ctx
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, doc := range s.memoryDocuments {
+		if doc.ConversationID == nil {
+			continue
+		}
+		if *doc.ConversationID != conversationID {
+			continue
+		}
+		if doc.SourceType != sourceType {
+			continue
+		}
+		if doc.ID == excludeDocumentID {
+			continue
+		}
+		if doc.Active {
+			doc.Active = false
+			doc.UpdatedAt = time.Now()
+		}
+	}
+
+	return nil
+}
+
+func (s *MemoryStore) UpdateConversationMemoryCheckpoint(
+	ctx context.Context,
+	conversationID uuid.UUID,
+	checkpointMsgID uuid.UUID,
+) error {
+	_ = ctx
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	conv, ok := s.conversations[conversationID.String()]
+	if !ok {
+		return fmt.Errorf("conversation not found: %s", conversationID)
+	}
+
+	now := time.Now()
+	conv.MemoryCheckpointMsgID = cloneUUIDPtr(&checkpointMsgID)
+	conv.SummaryUpdatedAt = &now
+	conv.UpdatedAt = now
+
+	return nil
+}
+
+func (s *MemoryStore) DeleteConversationMemorySnapshot(
+	ctx context.Context,
+	conversationID uuid.UUID,
+	sourceType model.MemorySourceType,
+) error {
+	_ = ctx
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	docIDs := make([]uuid.UUID, 0)
+	for id, doc := range s.memoryDocuments {
+		if doc.ConversationID == nil {
+			continue
+		}
+		if *doc.ConversationID == conversationID && doc.SourceType == sourceType {
+			docIDs = append(docIDs, id)
+		}
+	}
+
+	if len(docIDs) == 0 {
+		return nil
+	}
+
+	docIDSet := make(map[uuid.UUID]struct{}, len(docIDs))
+	for _, id := range docIDs {
+		docIDSet[id] = struct{}{}
+		delete(s.memoryDocuments, id)
+	}
+
+	chunkIDs := make([]uuid.UUID, 0)
+	for chunkID, chunk := range s.memoryChunks {
+		if _, ok := docIDSet[chunk.DocumentID]; ok {
+			chunkIDs = append(chunkIDs, chunkID)
+			delete(s.memoryChunks, chunkID)
+		}
+	}
+
+	for _, chunkID := range chunkIDs {
+		delete(s.memoryEmbeddings, chunkID)
+	}
+
+	return nil
+}
+
+func (s *MemoryStore) GetAllMessagesByConvID(
+	ctx context.Context,
+	conversationID string,
+) ([]model.Message, error) {
+	return s.GetMessagesByConvID(ctx, conversationID, 0, "asc", "")
+}
+
+// --------------------
 // Helpers
 // --------------------
 
@@ -1204,4 +1612,155 @@ func (s *MemoryStore) listCommentsByThreadIDLocked(threadID uuid.UUID, userID uu
 	})
 
 	return out
+}
+
+func cloneMemoryDocument(in *model.MemoryDocumentEntity) *model.MemoryDocumentEntity {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	out.ProjectID = cloneUUIDPtr(in.ProjectID)
+	out.ConversationID = cloneUUIDPtr(in.ConversationID)
+	out.SourceRefID = cloneUUIDPtr(in.SourceRefID)
+	out.IndexedAt = cloneTimePtr(in.IndexedAt)
+	out.FailedAt = cloneTimePtr(in.FailedAt)
+	return &out
+}
+
+func cloneMemoryChunk(in *model.MemoryChunkEntity) *model.MemoryChunkEntity {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	out.ProjectID = cloneUUIDPtr(in.ProjectID)
+	out.ConversationID = cloneUUIDPtr(in.ConversationID)
+	return &out
+}
+
+func cloneMemoryEmbedding(in *model.MemoryEmbeddingEntity) *model.MemoryEmbeddingEntity {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	return &out
+}
+
+func memoryChunkMatchesScope(
+	chunk *model.MemoryChunkEntity,
+	conversationID uuid.UUID,
+	projectID *uuid.UUID,
+	scope rag.Scope,
+) bool {
+	switch scope {
+	case rag.ScopeConversationOnly:
+		return chunk.ConversationID != nil && *chunk.ConversationID == conversationID
+
+	case rag.ScopeConversationAndProject:
+		if projectID == nil {
+			return false
+		}
+		inConv := chunk.ConversationID != nil && *chunk.ConversationID == conversationID
+		inProject := chunk.ProjectID != nil && *chunk.ProjectID == *projectID
+		return inConv || inProject
+
+	case rag.ScopeProjectOnly:
+		if projectID == nil {
+			return false
+		}
+		return chunk.ProjectID != nil && *chunk.ProjectID == *projectID
+
+	default:
+		return false
+	}
+}
+
+func cosineSimilarity(a, b []float32) float64 {
+	if len(a) == 0 || len(b) == 0 || len(a) != len(b) {
+		return 0
+	}
+
+	var dot, normA, normB float64
+	for i := range a {
+		av := float64(a[i])
+		bv := float64(b[i])
+		dot += av * bv
+		normA += av * av
+		normB += bv * bv
+	}
+
+	if normA == 0 || normB == 0 {
+		return 0
+	}
+
+	return dot / (math.Sqrt(normA) * math.Sqrt(normB))
+}
+
+func tokenizeForSearch(s string) []string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	if s == "" {
+		return nil
+	}
+
+	replacer := strings.NewReplacer(
+		",", " ",
+		".", " ",
+		";", " ",
+		":", " ",
+		"(", " ",
+		")", " ",
+		"[", " ",
+		"]", " ",
+		"{", " ",
+		"}", " ",
+		"\n", " ",
+		"\t", " ",
+		"\"", " ",
+		"'", " ",
+		"?", " ",
+		"!", " ",
+		"/", " ",
+		"\\", " ",
+		"|", " ",
+	)
+	s = replacer.Replace(s)
+
+	parts := strings.Fields(s)
+	if len(parts) == 0 {
+		return nil
+	}
+
+	out := make([]string, 0, len(parts))
+	seen := make(map[string]struct{}, len(parts))
+	for _, p := range parts {
+		if p == "" {
+			continue
+		}
+		if _, ok := seen[p]; ok {
+			continue
+		}
+		seen[p] = struct{}{}
+		out = append(out, p)
+	}
+	return out
+}
+
+func keywordScore(content string, queryTokens []string) float64 {
+	if len(queryTokens) == 0 {
+		return 0
+	}
+
+	lc := strings.ToLower(content)
+	if lc == "" {
+		return 0
+	}
+
+	var score float64
+	for _, tok := range queryTokens {
+		count := strings.Count(lc, tok)
+		if count > 0 {
+			score += float64(count)
+		}
+	}
+
+	return score
 }

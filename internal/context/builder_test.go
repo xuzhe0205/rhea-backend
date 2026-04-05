@@ -2,6 +2,7 @@ package context
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"rhea-backend/internal/model"
@@ -46,14 +47,17 @@ func TestBuilder_Build_NoSummary(t *testing.T) {
 		RecentMaxMsgs: 2, // only last 2 should be included
 	}
 
-	got, err := b.Build(ctx, conv, "new msg")
+	got, err := b.Build(ctx, BuildInput{
+		ConversationID: conv,
+		UserMsg:        "new msg",
+	})
 	if err != nil {
 		t.Fatalf("Build error: %v", err)
 	}
 
 	// Expected order:
 	// [0] system prompt
-	// [1] recent #1 (assistant hello)  (because last 2)
+	// [1] recent #1 (assistant hello)
 	// [2] recent #2 (user how are you?)
 	// [3] new user message
 	if len(got) != 4 {
@@ -105,32 +109,40 @@ func TestBuilder_Build_WithSummary(t *testing.T) {
 		RecentMaxMsgs: 10,
 	}
 
-	got, err := b.Build(ctx, conv, "new msg")
+	got, err := b.Build(ctx, BuildInput{
+		ConversationID: conv,
+		UserMsg:        "new msg",
+	})
 	if err != nil {
 		t.Fatalf("Build error: %v", err)
 	}
 
 	// Expected order:
-	// [0] system prompt
-	// [1] summary system message
-	// [2] recent old1
-	// [3] new user message
-	if len(got) != 4 {
-		t.Fatalf("expected 4 messages, got %d: %#v", len(got), got)
+	// [0] system prompt + embedded summary
+	// [1] recent old1
+	// [2] new user message
+	if len(got) != 3 {
+		t.Fatalf("expected 3 messages, got %d: %#v", len(got), got)
 	}
 
-	if got[1].Role != model.RoleSystem {
-		t.Fatalf("expected summary to be RoleSystem, got %#v", got[1])
+	if got[0].Role != model.RoleSystem {
+		t.Fatalf("expected first message to be system, got %#v", got[0])
 	}
-	if got[1].Content == "" || got[1].Content == "User is learning Go. Prefers SSE streaming." {
-		t.Fatalf("expected summary to be wrapped with prefix, got: %q", got[1].Content)
+	if !strings.Contains(got[0].Content, "You are Rhea.") {
+		t.Fatalf("expected system prompt base text, got: %q", got[0].Content)
+	}
+	if !strings.Contains(got[0].Content, "Conversation summary so far:") {
+		t.Fatalf("expected summary wrapper in system prompt, got: %q", got[0].Content)
+	}
+	if !strings.Contains(got[0].Content, "User is learning Go. Prefers SSE streaming.") {
+		t.Fatalf("expected summary content in system prompt, got: %q", got[0].Content)
 	}
 
-	if got[2].Content != "old1" {
-		t.Fatalf("unexpected recent message: %#v", got[2])
+	if got[1].Content != "old1" {
+		t.Fatalf("unexpected recent message: %#v", got[1])
 	}
-	if got[3].Content != "new msg" {
-		t.Fatalf("unexpected new user message: %#v", got[3])
+	if got[2].Role != model.RoleUser || got[2].Content != "new msg" {
+		t.Fatalf("unexpected new user message: %#v", got[2])
 	}
 }
 
@@ -167,10 +179,13 @@ func TestBuilder_Build_NoRecentMaxMsgs(t *testing.T) {
 	b := &Builder{
 		Store:         s,
 		SystemPrompt:  "You are Rhea.",
-		RecentMaxMsgs: 0, // No limit on recent message
+		RecentMaxMsgs: 0, // No limit on recent messages
 	}
 
-	got, err := b.Build(ctx, conv, "new msg")
+	got, err := b.Build(ctx, BuildInput{
+		ConversationID: conv,
+		UserMsg:        "new msg",
+	})
 	if err != nil {
 		t.Fatalf("Build error: %v", err)
 	}
@@ -202,25 +217,46 @@ func TestBuilder_Build_NoSystemPrompt(t *testing.T) {
 	ctx := context.Background()
 	s := store.NewMemoryStore()
 
-	conv := "c1"
-	// Seed some history
-	_, _ = s.AppendMessage(ctx, conv, nil, model.Message{Role: model.RoleUser, Content: "hi"}, nil)
-	_, _ = s.AppendMessage(ctx, conv, nil, model.Message{Role: model.RoleAssistant, Content: "hello"}, nil)
-	_, _ = s.AppendMessage(ctx, conv, nil, model.Message{Role: model.RoleUser, Content: "how are you?"}, nil)
+	convID := uuid.New()
+	conv := convID.String()
+
+	_, err := s.CreateConversation(ctx, &model.Conversation{
+		ID:     convID,
+		UserID: uuid.New(),
+		Title:  "test",
+	})
+	if err != nil {
+		t.Fatalf("CreateConversation error: %v", err)
+	}
+
+	_, err = s.AppendMessage(ctx, conv, nil, model.Message{Role: model.RoleUser, Content: "hi"}, nil)
+	if err != nil {
+		t.Fatalf("AppendMessage error: %v", err)
+	}
+	_, err = s.AppendMessage(ctx, conv, nil, model.Message{Role: model.RoleAssistant, Content: "hello"}, nil)
+	if err != nil {
+		t.Fatalf("AppendMessage error: %v", err)
+	}
+	_, err = s.AppendMessage(ctx, conv, nil, model.Message{Role: model.RoleUser, Content: "how are you?"}, nil)
+	if err != nil {
+		t.Fatalf("AppendMessage error: %v", err)
+	}
 
 	b := &Builder{
 		Store:         s,
-		RecentMaxMsgs: 2, // only last 2 should be included
+		RecentMaxMsgs: 2,
 	}
 
-	_, err := b.Build(ctx, conv, "new msg")
+	_, err = b.Build(ctx, BuildInput{
+		ConversationID: conv,
+		UserMsg:        "new msg",
+	})
 	if err == nil {
-		t.Fatalf("Expecting build error...")
+		t.Fatalf("expected build error")
 	}
 
 	expected := "system prompt is required"
 	if err.Error() != expected {
-		t.Errorf("Expected error %q, but got %q", expected, err.Error())
+		t.Errorf("expected error %q, got %q", expected, err.Error())
 	}
-
 }
