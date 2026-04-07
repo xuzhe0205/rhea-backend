@@ -38,6 +38,8 @@ type Conversation struct {
 	IsPinned              bool       `json:"is_pinned"`
 	PinnedAt              *time.Time `json:"pinned_at,omitempty"`
 	CumulativeTokens      int        `json:"cumulative_tokens"`
+	CreatedAt             time.Time  `json:"created_at"`
+	UpdatedAt             time.Time  `json:"updated_at"`
 	SummaryUpdatedAt      *time.Time `json:"summary_updated_at,omitempty"`
 	MemoryCheckpointMsgID *uuid.UUID `json:"memory_checkpoint_msg_id,omitempty"`
 }
@@ -96,11 +98,22 @@ type RemoveHighlightRangeRequest struct {
 type FavoriteMessageRow struct {
 	ID            uuid.UUID  `json:"id"`
 	ConvID        uuid.UUID  `json:"conversationId"`
+	ProjectID     *uuid.UUID `json:"project_id,omitempty"`
 	Role          Role       `json:"role"`
 	Content       string     `json:"content"`
 	CreatedAt     time.Time  `json:"createdAt"`
 	FavoritedAt   *time.Time `json:"favoritedAt"`
 	FavoriteLabel *string    `json:"favorite_label,omitempty"`
+}
+
+type Project struct {
+	ID          uuid.UUID `json:"id"`
+	UserID      uuid.UUID `json:"user_id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	Summary     string    `json:"summary"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 type CommentThread struct {

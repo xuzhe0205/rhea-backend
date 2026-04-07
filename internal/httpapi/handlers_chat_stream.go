@@ -89,6 +89,13 @@ func (h *ChatStreamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		OnModel: func(model string) error {
 			return writeEvent("model", model)
 		},
+		OnRag: func(payload map[string]any) error {
+			b, err := json.Marshal(payload)
+			if err != nil {
+				return err
+			}
+			return writeEvent("rag", string(b))
+		},
 	}
 
 	_, err := h.Agent.ChatStream(r.Context(), req.ConversationID, req.Message, callbacks)

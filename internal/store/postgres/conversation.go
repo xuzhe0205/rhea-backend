@@ -19,6 +19,7 @@ func (s *PostgresStore) CreateConversation(ctx context.Context, conv *model.Conv
 	entity := &model.ConversationEntity{
 		ID:        conv.ID,
 		UserID:    conv.UserID,
+		ProjectID: conv.ProjectID,
 		Title:     conv.Title,
 		Summary:   conv.Summary,
 		LastMsgID: conv.LastMsgID,
@@ -47,6 +48,8 @@ func (s *PostgresStore) GetConversation(ctx context.Context, id string) (*model.
 		PinnedAt:              entity.PinnedAt,
 		CumulativeTokens:      entity.TokenSum,
 		ProjectID:             entity.ProjectID,
+		CreatedAt:             entity.CreatedAt,
+		UpdatedAt:             entity.UpdatedAt,
 		SummaryUpdatedAt:      entity.SummaryUpdatedAt,
 		MemoryCheckpointMsgID: entity.MemoryCheckpointMsgID,
 	}, nil
@@ -57,7 +60,7 @@ func (s *PostgresStore) ListConversationsByUserID(ctx context.Context, userID uu
 	var entities []model.ConversationEntity
 
 	err := s.db.WithContext(ctx).
-		Where("user_id = ?", userID).
+		Where("user_id = ? AND project_id IS NULL", userID).
 		Order("is_pinned DESC").
 		Order("pinned_at DESC NULLS LAST").
 		Order("updated_at DESC").

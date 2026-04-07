@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"math"
 	"strings"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"rhea-backend/internal/llm"
 	"rhea-backend/internal/model"
 	"rhea-backend/internal/pkg/netutil"
+	"rhea-backend/internal/retrieval"
 
 	"github.com/google/uuid"
 )
@@ -19,6 +21,7 @@ type StreamCallbacks struct {
 	OnDelta func(delta string) error
 	OnMeta  func(payload map[string]any) error
 	OnModel func(model string) error
+	OnRag   func(payload map[string]any) error
 }
 
 func (s *Service) ChatStream(
@@ -91,13 +94,21 @@ func (s *Service) ChatStream(
 		}
 	}
 
-	// 5) 构建上下文
-	msgs, err := s.Builder.Build(ctx, ctxbuilder.BuildInput{
+	// 5) 构建上下文（含 RAG 检索）
+	buildResult, err := s.Builder.Build(ctx, ctxbuilder.BuildInput{
 		ConversationID: conversationID,
 		UserMsg:        userText,
 	})
 	if err != nil {
 		return "", err
+	}
+	msgs := buildResult.Messages
+
+	// 5a) 把 RAG 检索结果发给前端
+	if cb.OnRag != nil {
+		if err := cb.OnRag(computeRagStats(buildResult.RetrievedContext, string(buildResult.Scope))); err != nil {
+			return conversationID, err
+		}
 	}
 
 	// 6) 按你现有 Router 的流式 provider 链选择逻辑来跑
@@ -233,4 +244,59 @@ func (s *Service) ChatStream(
 	}
 
 	return conversationID, nil
+}
+
+func computeRagStats(rc *retrieval.RetrievedContext, scope string) map[string]any {
+	if rc == nil || len(rc.Chunks) == 0 {
+		return map[string]any{
+			"chunks_used":  0,
+			"top_score":    0.0,
+			"avg_score":    0.0,
+			"vector_hits":  0,
+			"keyword_hits": 0,
+			"mode":         "none",
+			"scope":        scope,
+		}
+	}
+
+	topScore := 0.0
+	totalScore := 0.0
+	vectorHits := 0
+	keywordHits := 0
+
+	for _, ch := range rc.Chunks {
+		if ch.FinalScore > topScore {
+			topScore = ch.FinalScore
+		}
+		totalScore += ch.FinalScore
+		if ch.VectorScore > 0.05 {
+			vectorHits++
+		}
+		if ch.KeywordScore > 0.05 {
+			keywordHits++
+		}
+	}
+
+	avgScore := totalScore / float64(len(rc.Chunks))
+
+	mode := "hybrid"
+	if vectorHits == 0 {
+		mode = "keyword"
+	} else if keywordHits == 0 {
+		mode = "vector"
+	}
+
+	round3 := func(v float64) float64 {
+		return math.Round(v*1000) / 1000
+	}
+
+	return map[string]any{
+		"chunks_used":  len(rc.Chunks),
+		"top_score":    round3(topScore),
+		"avg_score":    round3(avgScore),
+		"vector_hits":  vectorHits,
+		"keyword_hits": keywordHits,
+		"mode":         mode,
+		"scope":        scope,
+	}
 }

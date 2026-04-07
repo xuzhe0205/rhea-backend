@@ -260,6 +260,7 @@ func (s *PostgresStore) ListFavoriteMessages(
 		Select(`
 			m.id AS id,
 			m.conv_id AS conv_id,
+			c.project_id AS project_id,
 			m.role AS role,
 			m.content AS content,
 			m.created_at AS created_at,

@@ -44,6 +44,16 @@ type Store interface {
 	ListPinnedConversationsByUserID(ctx context.Context, userID uuid.UUID) ([]*model.Conversation, error)
 	SetConversationPinned(ctx context.Context, convID string, isPinned bool) error
 
+	// Project 相关
+	CreateProject(ctx context.Context, project *model.Project) error
+	GetProject(ctx context.Context, id uuid.UUID) (*model.Project, error)
+	ListProjectsByUserID(ctx context.Context, userID uuid.UUID) ([]*model.Project, error)
+	UpdateProject(ctx context.Context, project *model.Project) error
+	DeleteProject(ctx context.Context, id uuid.UUID) error
+	CountProjectConversations(ctx context.Context, projectID uuid.UUID) (int64, error)
+	ListConversationsByProjectID(ctx context.Context, projectID uuid.UUID) ([]*model.Conversation, error)
+	AssignConversationToProject(ctx context.Context, conversationID uuid.UUID, projectID uuid.UUID) error
+
 	// Summary 相关
 	GetSummary(ctx context.Context, conversationID string) (string, error)
 	SetSummary(ctx context.Context, conversationID string, summary string) error

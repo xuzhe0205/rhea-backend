@@ -26,21 +26,27 @@ type BuildInput struct {
 	UserMsg        string
 }
 
-func (b *Builder) Build(ctx context.Context, in BuildInput) ([]model.Message, error) {
+type BuildResult struct {
+	Messages         []model.Message
+	RetrievedContext *retrieval.RetrievedContext
+	Scope            rag.Scope
+}
+
+func (b *Builder) Build(ctx context.Context, in BuildInput) (BuildResult, error) {
 	fmt.Printf("\n--- [Builder] Starting context build for Conv: %s ---\n", in.ConversationID)
 
 	if b.SystemPrompt == "" {
-		return nil, errors.New("system prompt is required")
+		return BuildResult{}, errors.New("system prompt is required")
 	}
 
 	conv, err := b.Store.GetConversation(ctx, in.ConversationID)
 	if err != nil {
-		return nil, err
+		return BuildResult{}, err
 	}
 
 	recent, err := b.Store.GetMessagesByConvID(ctx, in.ConversationID, b.RecentMaxMsgs, "asc", "")
 	if err != nil {
-		return nil, err
+		return BuildResult{}, err
 	}
 
 	systemText := buildSystemPrompt(b.SystemPrompt, conv.Summary)
@@ -51,8 +57,10 @@ func (b *Builder) Build(ctx context.Context, in BuildInput) ([]model.Message, er
 		Content: systemText,
 	})
 
+	var retrievedCtx *retrieval.RetrievedContext
+	scope := rag.ScopeConversationOnly
+
 	if b.Retrieval != nil {
-		scope := rag.ScopeConversationOnly
 		if conv.ProjectID != nil {
 			scope = rag.ScopeConversationAndProject
 		}
@@ -66,8 +74,10 @@ func (b *Builder) Build(ctx context.Context, in BuildInput) ([]model.Message, er
 			Scope:          scope,
 		})
 		if err != nil {
-			return nil, err
+			return BuildResult{}, err
 		}
+
+		retrievedCtx = rc
 
 		if rc != nil && len(rc.Chunks) > 0 {
 			log.Printf("[Builder] conv=%s retrieved_chunks=%d recent_msgs=%d",
@@ -103,7 +113,11 @@ func (b *Builder) Build(ctx context.Context, in BuildInput) ([]model.Message, er
 		Content: in.UserMsg,
 	})
 
-	return msgs, nil
+	return BuildResult{
+		Messages:         msgs,
+		RetrievedContext: retrievedCtx,
+		Scope:            scope,
+	}, nil
 }
 
 func buildSystemPrompt(base string, summary string) string {

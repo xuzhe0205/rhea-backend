@@ -148,6 +148,9 @@ func main() {
 	commentSvc := service.NewCommentService(st)
 	commentHandler := &httpapi.CommentHandler{CommentSvc: commentSvc}
 
+	projectSvc := service.NewProjectService(st)
+	projectHandler := &httpapi.ProjectHandler{ProjectSvc: projectSvc}
+
 	// 健康检查
 	s.Handle("GET /health", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -193,6 +196,15 @@ func main() {
 	s.Handle("GET /v1/comments/{id}", protectedChain(http.HandlerFunc(commentHandler.GetComment)))
 	s.Handle("DELETE /v1/comments/{id}", protectedChain(http.HandlerFunc(commentHandler.DeleteComment)))
 	s.Handle("GET /v1/comment-threads", protectedChain(http.HandlerFunc(commentHandler.ListByMessageIDs)))
+
+	// Projects
+	s.Handle("GET /v1/projects", protectedChain(http.HandlerFunc(projectHandler.ListProjects)))
+	s.Handle("POST /v1/projects", protectedChain(http.HandlerFunc(projectHandler.CreateProject)))
+	s.Handle("GET /v1/projects/{id}", protectedChain(http.HandlerFunc(projectHandler.GetProject)))
+	s.Handle("PATCH /v1/projects/{id}", protectedChain(http.HandlerFunc(projectHandler.UpdateProject)))
+	s.Handle("DELETE /v1/projects/{id}", protectedChain(http.HandlerFunc(projectHandler.DeleteProject)))
+	s.Handle("GET /v1/projects/{id}/conversations", protectedChain(http.HandlerFunc(projectHandler.ListProjectConversations)))
+	s.Handle("POST /v1/projects/{id}/conversations", protectedChain(http.HandlerFunc(projectHandler.CreateProjectConversation)))
 
 	handlerWithCORS := middleware.CORS(s.Handler())
 

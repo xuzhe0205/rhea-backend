@@ -1487,6 +1487,42 @@ func (s *MemoryStore) GetAllMessagesByConvID(
 }
 
 // --------------------
+// Project stubs (not used in tests)
+// --------------------
+
+func (s *MemoryStore) CreateProject(_ context.Context, _ *model.Project) error {
+	return fmt.Errorf("not implemented")
+}
+
+func (s *MemoryStore) GetProject(_ context.Context, _ uuid.UUID) (*model.Project, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+
+func (s *MemoryStore) ListProjectsByUserID(_ context.Context, _ uuid.UUID) ([]*model.Project, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+
+func (s *MemoryStore) UpdateProject(_ context.Context, _ *model.Project) error {
+	return fmt.Errorf("not implemented")
+}
+
+func (s *MemoryStore) DeleteProject(_ context.Context, _ uuid.UUID) error {
+	return fmt.Errorf("not implemented")
+}
+
+func (s *MemoryStore) CountProjectConversations(_ context.Context, _ uuid.UUID) (int64, error) {
+	return 0, fmt.Errorf("not implemented")
+}
+
+func (s *MemoryStore) ListConversationsByProjectID(_ context.Context, _ uuid.UUID) ([]*model.Conversation, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+
+func (s *MemoryStore) AssignConversationToProject(_ context.Context, _ uuid.UUID, _ uuid.UUID) error {
+	return fmt.Errorf("not implemented")
+}
+
+// --------------------
 // Helpers
 // --------------------
 
