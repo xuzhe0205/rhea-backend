@@ -38,8 +38,8 @@ func (h *ChatStreamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Message == "" {
-		http.Error(w, "message is required", http.StatusBadRequest)
+	if req.Message == "" && len(req.ImageURLs) == 0 {
+		http.Error(w, "message or image_urls is required", http.StatusBadRequest)
 		return
 	}
 
@@ -98,7 +98,7 @@ func (h *ChatStreamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
-	_, err := h.Agent.ChatStream(r.Context(), req.ConversationID, req.Message, callbacks)
+	_, err := h.Agent.ChatStream(r.Context(), req.ConversationID, req.Message, req.ImageURLs, callbacks)
 	if errors.Is(err, agent.ErrNoProvider) {
 		_ = writeEvent("error", "no provider available")
 		return

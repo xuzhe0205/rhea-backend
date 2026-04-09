@@ -21,8 +21,9 @@ type ChatHandler struct {
 }
 
 type chatRequest struct {
-	ConversationID string `json:"conversation_id"`
-	Message        string `json:"message"`
+	ConversationID string   `json:"conversation_id"`
+	Message        string   `json:"message"`
+	ImageURLs      []string `json:"image_urls"`
 }
 
 type chatResponse struct {

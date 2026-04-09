@@ -19,6 +19,7 @@ import (
 	"rhea-backend/internal/retrieval"
 	"rhea-backend/internal/router"
 	"rhea-backend/internal/service"
+	"rhea-backend/internal/storage"
 	"rhea-backend/internal/store"
 	"rhea-backend/internal/store/postgres"
 )
@@ -151,6 +152,9 @@ func main() {
 	projectSvc := service.NewProjectService(st)
 	projectHandler := &httpapi.ProjectHandler{ProjectSvc: projectSvc}
 
+	r2 := storage.NewR2Client(cfg.R2AccountID, cfg.R2AccessKeyID, cfg.R2SecretAccessKey, cfg.R2Bucket)
+	uploadHandler := &httpapi.UploadHandler{R2: r2}
+
 	// 健康检查
 	s.Handle("GET /health", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -196,6 +200,10 @@ func main() {
 	s.Handle("GET /v1/comments/{id}", protectedChain(http.HandlerFunc(commentHandler.GetComment)))
 	s.Handle("DELETE /v1/comments/{id}", protectedChain(http.HandlerFunc(commentHandler.DeleteComment)))
 	s.Handle("GET /v1/comment-threads", protectedChain(http.HandlerFunc(commentHandler.ListByMessageIDs)))
+
+	// Uploads
+	s.Handle("POST /v1/uploads/image", protectedChain(http.HandlerFunc(uploadHandler.UploadImage)))
+	s.Handle("DELETE /v1/uploads/image", protectedChain(http.HandlerFunc(uploadHandler.DeleteImage)))
 
 	// Projects
 	s.Handle("GET /v1/projects", protectedChain(http.HandlerFunc(projectHandler.ListProjects)))

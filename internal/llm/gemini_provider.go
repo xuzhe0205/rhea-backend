@@ -145,9 +145,17 @@ func extractSystemPrompt(msgs []model.Message) (string, []*genai.Content) {
 			role = genai.RoleModel
 		}
 
+		parts := make([]*genai.Part, 0, len(m.Images)+1)
+		for _, img := range m.Images {
+			parts = append(parts, &genai.Part{
+				InlineData: &genai.Blob{MIMEType: img.MIMEType, Data: img.Data},
+			})
+		}
+		parts = append(parts, &genai.Part{Text: m.Content})
+
 		contents = append(contents, &genai.Content{
 			Role:  role,
-			Parts: []*genai.Part{{Text: m.Content}},
+			Parts: parts,
 		})
 	}
 	return systemText, contents

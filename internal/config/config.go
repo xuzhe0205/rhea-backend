@@ -15,6 +15,10 @@ type Config struct {
 	ModelFlash           string
 	ModelLite            string
 	DBDSN                string
+	R2AccessKeyID        string
+	R2SecretAccessKey    string
+	R2AccountID          string
+	R2Bucket             string
 }
 
 func Load() (*Config, error) {
@@ -55,6 +59,10 @@ func Load() (*Config, error) {
 		ModelFlash: getenvDefault("GEMINI_MODEL_FLASH", "gemini-3-flash-preview"),
 		ModelLite:  getenvDefault("GEMINI_MODEL_LITE", "gemini-3.1-flash-lite-preview"),
 		DBDSN:      dbDSN,
+		R2AccessKeyID:     os.Getenv("R2_ACCESS_KEY_ID"),
+		R2SecretAccessKey: os.Getenv("R2_SECRET_ACCESS_KEY"),
+		R2AccountID:       os.Getenv("R2_ACCOUNT_ID"),
+		R2Bucket:          getenvDefault("R2_BUCKET", "rhea-uploads"),
 	}
 
 	if cfg.GeminiAPIKey == "" || cfg.GeminiAPIKeyFree == "" {

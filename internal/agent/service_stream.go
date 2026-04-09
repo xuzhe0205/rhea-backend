@@ -3,8 +3,11 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"log"
 	"math"
+	"net/http"
 	"strings"
 	"time"
 
@@ -28,6 +31,7 @@ func (s *Service) ChatStream(
 	ctx context.Context,
 	conversationID string,
 	userText string,
+	imageURLs []string,
 	cb StreamCallbacks,
 ) (string, error) {
 	if s.Store == nil || s.Builder == nil || s.Router == nil {
@@ -104,7 +108,23 @@ func (s *Service) ChatStream(
 	}
 	msgs := buildResult.Messages
 
-	// 5a) 把 RAG 检索结果发给前端
+	// 5a) Fetch image bytes and attach to the current user turn
+	if len(imageURLs) > 0 {
+		attachments, fetchErr := fetchImages(ctx, imageURLs)
+		if fetchErr != nil {
+			log.Printf("[ChatStream] Warning: failed to fetch images: %v", fetchErr)
+		}
+		if len(attachments) > 0 {
+			for i := len(msgs) - 1; i >= 0; i-- {
+				if msgs[i].Role == model.RoleUser {
+					msgs[i].Images = attachments
+					break
+				}
+			}
+		}
+	}
+
+	// 5b) 把 RAG 检索结果发给前端
 	if cb.OnRag != nil {
 		if err := cb.OnRag(computeRagStats(buildResult.RetrievedContext, string(buildResult.Scope))); err != nil {
 			return conversationID, err
@@ -244,6 +264,32 @@ func (s *Service) ChatStream(
 	}
 
 	return conversationID, nil
+}
+
+func fetchImages(ctx context.Context, urls []string) ([]model.ImageAttachment, error) {
+	client := &http.Client{Timeout: 15 * time.Second}
+	out := make([]model.ImageAttachment, 0, len(urls))
+	for _, u := range urls {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+		if err != nil {
+			return out, fmt.Errorf("build request for image %q: %w", u, err)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return out, fmt.Errorf("fetch image %q: %w", u, err)
+		}
+		data, readErr := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
+		resp.Body.Close()
+		if readErr != nil {
+			return out, fmt.Errorf("read image body: %w", readErr)
+		}
+		ct := resp.Header.Get("Content-Type")
+		if ct == "" {
+			ct = http.DetectContentType(data)
+		}
+		out = append(out, model.ImageAttachment{MIMEType: ct, Data: data})
+	}
+	return out, nil
 }
 
 func computeRagStats(rc *retrieval.RetrievedContext, scope string) map[string]any {

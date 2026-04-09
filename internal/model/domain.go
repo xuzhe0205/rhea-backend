@@ -15,6 +15,13 @@ const (
 	RoleAssistant Role = "assistant"
 )
 
+// ImageAttachment carries image bytes for a single message turn.
+// It is never persisted — only used in-memory during LLM inference.
+type ImageAttachment struct {
+	MIMEType string
+	Data     []byte
+}
+
 type Message struct {
 	ID            uuid.UUID              `json:"id"`
 	ConvID        uuid.UUID              `json:"conv_id"`
@@ -22,10 +29,11 @@ type Message struct {
 	Content       string                 `json:"content"`
 	InputTokens   int                    `json:"input_tokens"`
 	OutputTokens  int                    `json:"output_tokens"`
-	CreatedAt     time.Time              `json:"created_at"`
+	CreatedAt     time.Time             `json:"created_at"`
 	Metadata      map[string]interface{} `json:"metadata,omitempty"`
 	IsFavorite    bool                   `json:"is_favorite"`
 	FavoriteLabel *string                `json:"favorite_label,omitempty"`
+	Images        []ImageAttachment      `json:"-"` // in-memory only
 }
 
 type Conversation struct {
