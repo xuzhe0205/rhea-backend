@@ -8,6 +8,7 @@ type Policy struct {
 	MinKeywordScore     float64
 	RequireAnySignal    bool
 	FTSConfig           string
+	CJKThreshold        float64 // fraction of CJK runes above which FTS is skipped; 0 uses default
 }
 
 func DefaultPolicy() Policy {
@@ -19,5 +20,6 @@ func DefaultPolicy() Policy {
 		MinKeywordScore:     0.0,
 		RequireAnySignal:    true,
 		FTSConfig:           "english",
+		CJKThreshold:        0.10,
 	}
 }

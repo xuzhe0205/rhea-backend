@@ -43,6 +43,13 @@ func (s *Service) Retrieve(ctx context.Context, in QueryInput) (*RetrievedContex
 		candidateK = policy.TopK
 	}
 
+	threshold := policy.CJKThreshold
+	if threshold <= 0 {
+		threshold = DefaultPolicy().CJKThreshold
+	}
+	ratio := cjkRatio(in.Query)
+	skipFTS := ratio >= threshold
+
 	queryEmbedding, err := s.Embeddings.EmbedText(ctx, vectorQuery)
 	if err != nil {
 		return nil, err
@@ -61,33 +68,38 @@ func (s *Service) Retrieve(ctx context.Context, in QueryInput) (*RetrievedContex
 		return nil, err
 	}
 
-	keywordHits, err := s.Store.KeywordSearchMemoryChunks(
-		ctx,
-		in.UserID,
-		in.ConversationID,
-		in.ProjectID,
-		in.Scope,
-		keywordQuery,
-		policy.FTSConfig,
-		candidateK,
-	)
-	if err != nil {
-		return nil, err
+	var keywordHits []store.MemoryChunkSearchResult
+	if !skipFTS {
+		keywordHits, err = s.Store.KeywordSearchMemoryChunks(
+			ctx,
+			in.UserID,
+			in.ConversationID,
+			in.ProjectID,
+			in.Scope,
+			keywordQuery,
+			policy.FTSConfig,
+			candidateK,
+		)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	merged := mergeAndDedupe(vectorHits, keywordHits)
-	reranked := rerank(merged)
+	reranked := rerank(merged, skipFTS)
 	diverse := diversify(reranked, 2, 1)
 	filtered := applyPolicy(diverse, policy)
 
 	log.Printf(
-		"[Retrieval] conv=%s scope=%s query=%q vector_query=%q keyword_query=%q fts=%s topK=%d candidateK=%d vector_hits=%d keyword_hits=%d kept=%d min_final=%.2f",
+		"[Retrieval] conv=%s scope=%s query=%q vector_query=%q keyword_query=%q fts=%s skip_fts=%v cjk_ratio=%.2f topK=%d candidateK=%d vector_hits=%d keyword_hits=%d kept=%d min_final=%.2f",
 		in.ConversationID,
 		in.Scope,
 		in.Query,
 		vectorQuery,
 		keywordQuery,
 		policy.FTSConfig,
+		skipFTS,
+		ratio,
 		policy.TopK,
 		candidateK,
 		len(vectorHits),

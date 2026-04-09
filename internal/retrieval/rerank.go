@@ -2,14 +2,19 @@ package retrieval
 
 import "sort"
 
-func rerank(chunks []RetrievedChunk) []RetrievedChunk {
+func rerank(chunks []RetrievedChunk, skipFTS bool) []RetrievedChunk {
 	for i := range chunks {
-		// v1 轻量加权
-		// vector 为主，keyword 为辅，importance 先占很小权重
-		chunks[i].FinalScore =
-			0.70*chunks[i].VectorScore +
-				0.25*chunks[i].KeywordScore +
-				0.05*chunks[i].Chunk.ImportanceScore
+		if skipFTS {
+			// FTS skipped (CJK/non-Latin query): redistribute keyword weight to vector
+			chunks[i].FinalScore =
+				0.95*chunks[i].VectorScore +
+					0.05*chunks[i].Chunk.ImportanceScore
+		} else {
+			chunks[i].FinalScore =
+				0.70*chunks[i].VectorScore +
+					0.25*chunks[i].KeywordScore +
+					0.05*chunks[i].Chunk.ImportanceScore
+		}
 	}
 
 	sort.Slice(chunks, func(i, j int) bool {
