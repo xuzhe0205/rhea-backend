@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,12 +19,16 @@ import (
 
 type ChatHandler struct {
 	Agent *agent.Service
+	R2    interface {
+		PresignGet(ctx context.Context, key string) (string, error)
+	}
 }
 
 type chatRequest struct {
 	ConversationID string   `json:"conversation_id"`
 	Message        string   `json:"message"`
 	ImageURLs      []string `json:"image_urls"`
+	ImageKeys      []string `json:"image_keys"`
 }
 
 type chatResponse struct {
@@ -204,6 +209,34 @@ func (h *ChatHandler) ListConversationMessages(w http.ResponseWriter, r *http.Re
 	// 同样确保返回 [] 而不是 null
 	if msgs == nil {
 		msgs = []model.Message{}
+	}
+
+	// Inject fresh presigned image URLs into metadata for any message that has image_keys stored.
+	if h.R2 != nil {
+		for i := range msgs {
+			m := &msgs[i]
+			if m.Metadata == nil {
+				continue
+			}
+			raw, ok := m.Metadata["image_keys"]
+			if !ok {
+				continue
+			}
+			keys, ok := extractStringSlice(raw)
+			if !ok || len(keys) == 0 {
+				continue
+			}
+			urls := make([]string, 0, len(keys))
+			for _, k := range keys {
+				u, err := h.R2.PresignGet(r.Context(), k)
+				if err != nil {
+					log.Printf("[ListConversationMessages] presign failed for key=%s: %v", k, err)
+					continue
+				}
+				urls = append(urls, u)
+			}
+			m.Metadata["image_urls"] = urls
+		}
 	}
 
 	_ = json.NewEncoder(w).Encode(msgs)
@@ -563,4 +596,24 @@ func (h *ChatHandler) ListPinnedConversations(w http.ResponseWriter, r *http.Req
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(convs)
+}
+
+// extractStringSlice converts interface{} values that may be []string or []interface{} into []string.
+// JSON unmarshaling into map[string]interface{} always produces []interface{}, not []string.
+func extractStringSlice(v interface{}) ([]string, bool) {
+	switch t := v.(type) {
+	case []string:
+		return t, true
+	case []interface{}:
+		out := make([]string, 0, len(t))
+		for _, item := range t {
+			s, ok := item.(string)
+			if !ok {
+				return nil, false
+			}
+			out = append(out, s)
+		}
+		return out, true
+	}
+	return nil, false
 }

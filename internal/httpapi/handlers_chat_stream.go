@@ -98,7 +98,7 @@ func (h *ChatStreamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
-	_, err := h.Agent.ChatStream(r.Context(), req.ConversationID, req.Message, req.ImageURLs, callbacks)
+	_, err := h.Agent.ChatStream(r.Context(), req.ConversationID, req.Message, req.ImageURLs, req.ImageKeys, callbacks)
 	if errors.Is(err, agent.ErrNoProvider) {
 		_ = writeEvent("error", "no provider available")
 		return

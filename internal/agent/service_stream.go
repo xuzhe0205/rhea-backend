@@ -32,6 +32,7 @@ func (s *Service) ChatStream(
 	conversationID string,
 	userText string,
 	imageURLs []string,
+	imageKeys []string,
 	cb StreamCallbacks,
 ) (string, error) {
 	if s.Store == nil || s.Builder == nil || s.Router == nil {
@@ -80,10 +81,14 @@ func (s *Service) ChatStream(
 	}
 
 	// 3) 先落库 user message，拿到真实 ID
+	var userMsgMeta map[string]interface{}
+	if len(imageKeys) > 0 {
+		userMsgMeta = map[string]interface{}{"image_keys": imageKeys}
+	}
 	newUserMsgID, err := s.Store.AppendMessage(ctx, conversationID, parentID, model.Message{
 		Role:    model.RoleUser,
 		Content: userText,
-	}, nil)
+	}, userMsgMeta)
 	if err != nil {
 		return "", err
 	}

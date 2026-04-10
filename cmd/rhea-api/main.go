@@ -172,7 +172,7 @@ func main() {
 	s.Handle("GET /v1/me", protectedChain(http.HandlerFunc(authHandler.GetMe)))
 
 	// 聊天相关
-	chatHandler := &httpapi.ChatHandler{Agent: svc}
+	chatHandler := &httpapi.ChatHandler{Agent: svc, R2: r2}
 	s.Handle("POST /v1/chat", protectedChain(middleware.TokenUsageInterceptor(chatHandler)))
 
 	streamHandler := &httpapi.ChatStreamHandler{Agent: svc}
