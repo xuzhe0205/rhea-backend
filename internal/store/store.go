@@ -162,4 +162,9 @@ type Store interface {
 		ctx context.Context,
 		conversationID string,
 	) ([]model.Message, error)
+
+	// ===== Share links =====
+	CreateShareLink(ctx context.Context, link *model.ShareLink) error
+	GetShareLinkByToken(ctx context.Context, token string) (*model.ShareLink, error)
+	GetMessagesByIDs(ctx context.Context, ids []uuid.UUID) ([]model.Message, error)
 }

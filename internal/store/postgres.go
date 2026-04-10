@@ -26,6 +26,7 @@ func InitDB(dsn string) (*gorm.DB, error) {
 		&model.MemoryChunkEntity{},
 		&model.MemoryDocumentEntity{},
 		&model.MemoryEmbeddingEntity{},
+		&model.ShareLinkEntity{},
 	)
 	if err != nil {
 		return nil, err

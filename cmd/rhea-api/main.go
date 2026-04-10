@@ -205,6 +205,11 @@ func main() {
 	s.Handle("POST /v1/uploads/image", protectedChain(http.HandlerFunc(uploadHandler.UploadImage)))
 	s.Handle("DELETE /v1/uploads/image", protectedChain(http.HandlerFunc(uploadHandler.DeleteImage)))
 
+	// Share links
+	shareHandler := &httpapi.ShareHandler{Store: st, R2: r2}
+	s.Handle("POST /v1/share", protectedChain(http.HandlerFunc(shareHandler.CreateShareLink)))
+	s.Handle("GET /v1/share/{token}", http.HandlerFunc(shareHandler.GetSharedContent)) // public
+
 	// Projects
 	s.Handle("GET /v1/projects", protectedChain(http.HandlerFunc(projectHandler.ListProjects)))
 	s.Handle("POST /v1/projects", protectedChain(http.HandlerFunc(projectHandler.CreateProject)))
