@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -242,19 +243,15 @@ func isValidShareToken(token string) bool {
 	return true
 }
 
-// buildShareURL constructs the frontend share URL from the request host.
-// In production this will be rheaindex.com; in dev, localhost:3000.
+// buildShareURL constructs the frontend share URL.
+// Set FRONTEND_BASE_URL (e.g. "https://rheaindex.com") in production.
+// Falls back to localhost:3000 for local dev.
 func buildShareURL(r *http.Request, token string) string {
-	scheme := "https"
-	host := r.Header.Get("X-Forwarded-Host")
-	if host == "" {
-		host = r.Host
+	if base := os.Getenv("FRONTEND_BASE_URL"); base != "" {
+		return fmt.Sprintf("%s/s/%s", strings.TrimRight(base, "/"), token)
 	}
-	// Dev: backend is on :8080, frontend on :3000
-	if strings.HasPrefix(host, "localhost") || strings.HasPrefix(host, "127.") {
-		host = strings.Replace(host, "8080", "3000", 1)
-		scheme = "http"
-	}
-	return fmt.Sprintf("%s://%s/s/%s", scheme, host, token)
+	// Local dev fallback: backend on :8080, frontend on :3000
+	host := strings.Replace(r.Host, "8080", "3000", 1)
+	return fmt.Sprintf("http://%s/s/%s", host, token)
 }
 
