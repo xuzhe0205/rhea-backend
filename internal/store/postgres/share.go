@@ -54,22 +54,13 @@ func (s *PostgresStore) GetMessagesByIDs(ctx context.Context, ids []uuid.UUID) (
 	var entities []model.MessageEntity
 	if err := s.db.WithContext(ctx).
 		Where("id IN ?", ids).
+		Order("created_at ASC").
 		Find(&entities).Error; err != nil {
 		return nil, fmt.Errorf("get messages by ids: %w", err)
 	}
 
-	// Index by ID so we can return in the caller's requested order
-	entityMap := make(map[uuid.UUID]model.MessageEntity, len(entities))
+	msgs := make([]model.Message, 0, len(entities))
 	for _, e := range entities {
-		entityMap[e.ID] = e
-	}
-
-	msgs := make([]model.Message, 0, len(ids))
-	for _, id := range ids {
-		e, ok := entityMap[id]
-		if !ok {
-			continue
-		}
 		var meta map[string]interface{}
 		if len(e.Metadata) > 0 {
 			_ = json.Unmarshal(e.Metadata, &meta)
