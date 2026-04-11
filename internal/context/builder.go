@@ -33,8 +33,6 @@ type BuildResult struct {
 }
 
 func (b *Builder) Build(ctx context.Context, in BuildInput) (BuildResult, error) {
-	fmt.Printf("\n--- [Builder] Starting context build for Conv: %s ---\n", in.ConversationID)
-
 	if b.SystemPrompt == "" {
 		return BuildResult{}, errors.New("system prompt is required")
 	}

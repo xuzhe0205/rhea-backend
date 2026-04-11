@@ -9,6 +9,7 @@ import (
 
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 // InitDB opens a GORM connection and runs AutoMigrate.
@@ -20,7 +21,9 @@ func InitDB(dsn string) (*gorm.DB, error) {
 	var err error
 
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		db, err = gorm.Open(postgres.Open(dsn), &gorm.Config{})
+		db, err = gorm.Open(postgres.Open(dsn), &gorm.Config{
+			Logger: logger.Default.LogMode(logger.Error),
+		})
 		if err == nil {
 			break
 		}
