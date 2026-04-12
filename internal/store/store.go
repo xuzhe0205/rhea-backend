@@ -43,6 +43,7 @@ type Store interface {
 	IncrementConversationTokenUsage(ctx context.Context, convID string, delta int) error
 	ListPinnedConversationsByUserID(ctx context.Context, userID uuid.UUID) ([]*model.Conversation, error)
 	SetConversationPinned(ctx context.Context, convID string, isPinned bool) error
+	DeleteConversation(ctx context.Context, convID uuid.UUID) (imageKeys []string, err error)
 
 	// Project 相关
 	CreateProject(ctx context.Context, project *model.Project) error

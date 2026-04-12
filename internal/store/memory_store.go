@@ -595,6 +595,16 @@ func (s *MemoryStore) SetConversationPinned(ctx context.Context, convID string, 
 	return nil
 }
 
+func (s *MemoryStore) DeleteConversation(_ context.Context, convID uuid.UUID) (imageKeys []string, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	idStr := convID.String()
+	delete(s.conversations, idStr)
+	delete(s.messages, idStr)
+	return nil, nil
+}
+
 func (s *MemoryStore) GetSummary(ctx context.Context, conversationID string) (string, error) {
 	_ = ctx
 

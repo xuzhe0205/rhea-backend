@@ -363,3 +363,22 @@ func (s *Service) ListPinnedConversations(
 	}
 	return convs, nil
 }
+
+// DeleteConversation verifies ownership then cascades the delete.
+// It returns the R2 image keys that were stored in message metadata so the
+// caller can delete them from object storage after the DB transaction commits.
+func (s *Service) DeleteConversation(
+	ctx context.Context,
+	userID uuid.UUID,
+	convID uuid.UUID,
+) (imageKeys []string, err error) {
+	conv, err := s.Store.GetConversation(ctx, convID.String())
+	if err != nil {
+		return nil, fmt.Errorf("conversation not found: %w", err)
+	}
+	if conv.UserID != userID {
+		return nil, fmt.Errorf("access denied")
+	}
+
+	return s.Store.DeleteConversation(ctx, convID)
+}

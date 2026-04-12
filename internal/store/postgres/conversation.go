@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -174,6 +175,104 @@ func (s *PostgresStore) SetConversationPinned(ctx context.Context, convID string
 		return gorm.ErrRecordNotFound
 	}
 	return nil
+}
+
+// DeleteConversation cascades: annotations, comment threads+comments, messages, memory docs/chunks, then conversation.
+// Returns the R2 image keys stored in message metadata so the caller can delete them from object storage.
+func (s *PostgresStore) DeleteConversation(ctx context.Context, convID uuid.UUID) (imageKeys []string, err error) {
+	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// 1. Collect R2 image keys from message metadata before deletion.
+		var messages []model.MessageEntity
+		if err := tx.Where("conv_id = ?", convID).Find(&messages).Error; err != nil {
+			return err
+		}
+
+		for _, m := range messages {
+			if len(m.Metadata) == 0 {
+				continue
+			}
+			var meta map[string]interface{}
+			if jsonErr := json.Unmarshal(m.Metadata, &meta); jsonErr != nil {
+				continue
+			}
+			if raw, ok := meta["image_keys"]; ok {
+				switch v := raw.(type) {
+				case []string:
+					imageKeys = append(imageKeys, v...)
+				case []interface{}:
+					for _, item := range v {
+						if s, ok := item.(string); ok {
+							imageKeys = append(imageKeys, s)
+						}
+					}
+				}
+			}
+		}
+
+		// 2. Delete annotations (linked via message_id → messages in this conversation).
+		if err := tx.
+			Where("conv_id = ?", convID).
+			Delete(&model.AnnotationEntity{}).Error; err != nil {
+			return err
+		}
+
+		// 3. Delete comments belonging to threads of this conversation.
+		if err := tx.
+			Where("thread_id IN (SELECT id FROM comment_thread_entities WHERE conv_id = ?)", convID).
+			Delete(&model.CommentEntity{}).Error; err != nil {
+			return err
+		}
+
+		// 4. Delete comment threads.
+		if err := tx.
+			Where("conv_id = ?", convID).
+			Delete(&model.CommentThreadEntity{}).Error; err != nil {
+			return err
+		}
+
+		// 5. Delete memory chunks/embeddings via documents.
+		var docIDs []uuid.UUID
+		if err := tx.
+			Model(&model.MemoryDocumentEntity{}).
+			Where("conversation_id = ?", convID).
+			Pluck("id", &docIDs).Error; err != nil {
+			return err
+		}
+		if len(docIDs) > 0 {
+			// Collect chunk IDs for embedding deletion.
+			var chunkIDs []uuid.UUID
+			if err := tx.
+				Model(&model.MemoryChunkEntity{}).
+				Where("document_id IN ?", docIDs).
+				Pluck("id", &chunkIDs).Error; err != nil {
+				return err
+			}
+			if len(chunkIDs) > 0 {
+				if err := tx.Where("chunk_id IN ?", chunkIDs).Delete(&model.MemoryEmbeddingEntity{}).Error; err != nil {
+					return err
+				}
+			}
+			if err := tx.Where("document_id IN ?", docIDs).Delete(&model.MemoryChunkEntity{}).Error; err != nil {
+				return err
+			}
+			if err := tx.Where("id IN ?", docIDs).Delete(&model.MemoryDocumentEntity{}).Error; err != nil {
+				return err
+			}
+		}
+
+		// 6. Delete messages.
+		if err := tx.Where("conv_id = ?", convID).Delete(&model.MessageEntity{}).Error; err != nil {
+			return err
+		}
+
+		// 7. Delete the conversation itself.
+		if err := tx.Where("id = ?", convID).Delete(&model.ConversationEntity{}).Error; err != nil {
+			return err
+		}
+
+		return nil
+	})
+	return imageKeys, err
 }
 
 func (s *PostgresStore) ListPinnedConversationsByUserID(ctx context.Context, userID uuid.UUID) ([]*model.Conversation, error) {

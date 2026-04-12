@@ -21,6 +21,7 @@ type ChatHandler struct {
 	Agent *agent.Service
 	R2    interface {
 		PresignGet(ctx context.Context, key string) (string, error)
+		DeleteImage(ctx context.Context, key string) error
 	}
 }
 
@@ -596,6 +597,59 @@ func (h *ChatHandler) ListPinnedConversations(w http.ResponseWriter, r *http.Req
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(convs)
+}
+
+// DeleteConversation handles DELETE /v1/conversations/{id}.
+// It cascades the delete to messages, annotations, comment threads, and R2 images.
+func (h *ChatHandler) DeleteConversation(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	userID, ok := auth.GetUserID(r.Context())
+	if !ok {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	convIDStr := r.PathValue("id")
+	if convIDStr == "" {
+		http.Error(w, "missing conversation id", http.StatusBadRequest)
+		return
+	}
+
+	convID, err := uuid.Parse(convIDStr)
+	if err != nil {
+		http.Error(w, "invalid conversation id format", http.StatusBadRequest)
+		return
+	}
+
+	imageKeys, err := h.Agent.DeleteConversation(r.Context(), userID, convID)
+	if err != nil {
+		if strings.Contains(err.Error(), "access denied") {
+			http.Error(w, err.Error(), http.StatusForbidden)
+			return
+		}
+		if strings.Contains(err.Error(), "not found") {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		log.Printf("[DeleteConversation] error: %v", err)
+		http.Error(w, "failed to delete conversation: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Best-effort R2 cleanup — don't fail the request if storage deletion fails.
+	if h.R2 != nil {
+		for _, key := range imageKeys {
+			if delErr := h.R2.DeleteImage(r.Context(), key); delErr != nil {
+				log.Printf("[DeleteConversation] failed to delete R2 key %s: %v", key, delErr)
+			}
+		}
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // extractStringSlice converts interface{} values that may be []string or []interface{} into []string.
