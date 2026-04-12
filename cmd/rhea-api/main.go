@@ -205,6 +205,10 @@ func main() {
 	s.Handle("POST /v1/uploads/image", protectedChain(http.HandlerFunc(uploadHandler.UploadImage)))
 	s.Handle("DELETE /v1/uploads/image", protectedChain(http.HandlerFunc(uploadHandler.DeleteImage)))
 
+	// Transcription
+	transcribeHandler := &httpapi.TranscribeHandler{}
+	s.Handle("POST /v1/transcribe", protectedChain(http.HandlerFunc(transcribeHandler.Transcribe)))
+
 	// Share links
 	shareHandler := &httpapi.ShareHandler{Store: st, R2: r2}
 	s.Handle("POST /v1/share", protectedChain(http.HandlerFunc(shareHandler.CreateShareLink)))
