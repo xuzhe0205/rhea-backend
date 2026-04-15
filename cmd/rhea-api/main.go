@@ -169,14 +169,27 @@ func main() {
 		middleware.AuthMiddleware,
 	)
 
+	rl := middleware.NewRateLimiter()
+
+	// Rate-limited chains for expensive endpoints.
+	// Limits are per-user per minute using a token bucket (allows short bursts).
+	chatChain := middleware.CreateChain(
+		middleware.AuthMiddleware,
+		rl.Middleware("chat", 20),
+	)
+	transcribeChain := middleware.CreateChain(
+		middleware.AuthMiddleware,
+		rl.Middleware("transcribe", 10),
+	)
+
 	s.Handle("GET /v1/me", protectedChain(http.HandlerFunc(authHandler.GetMe)))
 
 	// 聊天相关
 	chatHandler := &httpapi.ChatHandler{Agent: svc, R2: r2}
-	s.Handle("POST /v1/chat", protectedChain(middleware.TokenUsageInterceptor(chatHandler)))
+	s.Handle("POST /v1/chat", chatChain(chatHandler))
 
 	streamHandler := &httpapi.ChatStreamHandler{Agent: svc}
-	s.Handle("POST /v1/chat/stream", protectedChain(streamHandler))
+	s.Handle("POST /v1/chat/stream", chatChain(streamHandler))
 
 	s.Handle("PATCH /v1/messages/{id}/favorite", protectedChain(http.HandlerFunc(chatHandler.PatchMessageFavorite)))
 	s.Handle("GET /v1/messages/favorites", protectedChain(http.HandlerFunc(chatHandler.ListFavoriteMessages)))
@@ -208,7 +221,7 @@ func main() {
 
 	// Transcription
 	transcribeHandler := &httpapi.TranscribeHandler{}
-	s.Handle("POST /v1/transcribe", protectedChain(http.HandlerFunc(transcribeHandler.Transcribe)))
+	s.Handle("POST /v1/transcribe", transcribeChain(http.HandlerFunc(transcribeHandler.Transcribe)))
 
 	// Share links
 	shareHandler := &httpapi.ShareHandler{Store: st, R2: r2}
