@@ -147,11 +147,28 @@ func extractSystemPrompt(msgs []model.Message) (string, []*genai.Content) {
 
 		parts := make([]*genai.Part, 0, len(m.Images)+1)
 		for _, img := range m.Images {
+			// Skip images with no bytes — an empty inline_data blob would
+			// trip Gemini's "oneof field 'data' must have one initialized
+			// field" validation the same way an empty text part does.
+			if len(img.Data) == 0 {
+				continue
+			}
 			parts = append(parts, &genai.Part{
 				InlineData: &genai.Blob{MIMEType: img.MIMEType, Data: img.Data},
 			})
 		}
-		parts = append(parts, &genai.Part{Text: m.Content})
+		// Only add a text part when non-empty. Gemini's Part.Text is a
+		// `oneof data` field — an empty string leaves the oneof
+		// un-initialized and the whole request is rejected with
+		// "required oneof field 'data' must have one initialized field".
+		if m.Content != "" {
+			parts = append(parts, &genai.Part{Text: m.Content})
+		}
+		// Drop entirely-empty messages so they don't poison the history
+		// (e.g. a persisted image-only message whose bytes went missing).
+		if len(parts) == 0 {
+			continue
+		}
 
 		contents = append(contents, &genai.Content{
 			Role:  role,
