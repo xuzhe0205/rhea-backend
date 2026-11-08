@@ -161,6 +161,19 @@ func main() {
 		_, _ = w.Write([]byte("ok"))
 	}))
 
+	// DB health check: used by the external keep-alive pinger so the Supabase
+	// free-tier project sees regular activity and doesn't get paused.
+	s.Handle("GET /health/db", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+		if err := store.Ping(ctx, postgresDB); err != nil {
+			log.Printf("health/db: %v", err)
+			http.Error(w, "db unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = w.Write([]byte("ok"))
+	}))
+
 	// 身份验证
 	s.Handle("POST /v1/login", http.HandlerFunc(authHandler.Login))
 	// s.Handle("POST /v1/register", http.HandlerFunc(authHandler.Register))
